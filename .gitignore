@@ -4,6 +4,11 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+build/
+dist/
+runtime/
+runtime-tools.json
+setup.log
 
 # ── Рабочие данные юриста: НИКОГДА не коммитить (реальные ФИО, паспорта, счета) ──
 

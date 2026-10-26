@@ -31,10 +31,16 @@ bash install-linux.sh
 
 ### Windows
 
-1. Поставьте Python 3.9–3.14, Tesseract OCR (с языковым пакетом **RUSSIAN**),
-   Poppler и LibreOffice — ссылки в [`windows-downloads.txt`](windows-downloads.txt),
-   пошагово — в [`windows-installation.txt`](windows-installation.txt).
-2. Запустите `install-windows.bat`.
+Запустите **`SOVA-Setup-0.2.0-x64.exe`** (Windows 10/11, x64).
+Мастер проверит Python/Tkinter, подготовит отдельное окружение с библиотеками
+и предложит установить отсутствующие Tesseract OCR, Poppler и LibreOffice.
+Русская модель OCR включена в установщик. Для загрузки недостающих компонентов
+нужен интернет; сама программа обрабатывает документы локально.
+
+Из исходников можно запустить `install-windows.bat` — он использует те же проверки
+и спрашивает об установке недостающих компонентов и LibreOffice.
+Пошагово — [`windows-installation.txt`](windows-installation.txt),
+сборка установщика — [`packaging/windows/README.md`](packaging/windows/README.md).
 
 ### Зависимости
 
@@ -68,10 +74,14 @@ verification-checklist.txt   что нажать и что должно появ
 `output-contracts/`, `scans/`, `scans-family/`, `scans-consumer/` и
 `contract-templates/` внутри папки приложения по мере использования.
 
-1. Положите в `~/Desktop/filing/incoming` расчёт бухгалтерии и сканы справок Ф-9.
-2. Ярлык **«1 Загрузить данные»** — импорт: распознавание, таблица ввода, отчёт сверки.
-3. Ярлык **«2 Собрать документы»** — судебные приказы и иски в папку `output/`.
-4. Проверьте `validation-report.txt` и откройте документы в Word / LibreOffice.
+1. Откройте СОВА и выберите направление в боковой панели.
+2. **«Выбрать файлы»** — загрузите расчёт и сканы для распознавания.
+3. **«Открыть таблицу / анкету»** — проверьте данные и сохраните исправления.
+4. **«Создать документы»** — получите документы в папке `output/` соответствующего раздела.
+   Проверьте `validation-report*.txt` и откройте документы в Word / LibreOffice.
+
+На Windows входящие файлы можно хранить в `incoming/` внутри папки установки
+(`%LOCALAPPDATA%\Programs\OwlLawyer` по умолчанию).
 
 Полный цикл показывает демо-набор в `incoming/demo/` — все данные в нём
 **вымышленные**: компания «ООО „Рога и Копыта“», адреса «Примерная область, Примерный
