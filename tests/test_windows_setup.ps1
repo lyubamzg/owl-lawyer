@@ -24,10 +24,11 @@ foreach ($file in @(Get-ChildItem (Join-Path $root 'packaging/windows') -Filter 
 }
 
 $env:OS = 'Windows_NT' # Makes orchestration fixtures runnable on macOS too.
+function Get-WindowsBuild { return 17134 }
 $script:packages = [Collections.Generic.List[string]]::new()
 $script:commands = [Collections.Generic.List[string]]::new()
 function Update-ProcessPath {}
-function Install-WinGetPackage { param([string]$Id, [string]$Scope); $script:packages.Add($Id) }
+function Install-Dependency { param([string]$Id, [string]$Scope); $script:packages.Add($Id) }
 function Find-Python { return $Python }
 function Test-Python { param([string]$Path); return $true }
 function Find-Tool { param([string]$Name); return (Join-Path $fixture "$Name.exe") }

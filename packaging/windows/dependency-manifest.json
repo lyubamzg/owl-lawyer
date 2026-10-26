@@ -1,0 +1,37 @@
+{
+  "Python.Python.3.14": {
+    "version": "3.14.7",
+    "kind": "python",
+    "filename": "python-3.14.7-amd64.exe",
+    "url": "https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe",
+    "sha256": "9d9eb2709ef81bf5cd30db3c2096bdbc4ea10087c22e62f27d356b36f6ae9649"
+  },
+  "UB-Mannheim.TesseractOCR": {
+    "version": "5.4.0.20240606",
+    "kind": "tesseract",
+    "filename": "tesseract-ocr-w64-setup-5.4.0.20240606.exe",
+    "url": "https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe",
+    "sha256": "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9"
+  },
+  "oschwartz10612.Poppler": {
+    "version": "25.07.0-0",
+    "kind": "poppler",
+    "filename": "Release-25.07.0-0.zip",
+    "url": "https://github.com/oschwartz10612/poppler-windows/releases/download/v25.07.0-0/Release-25.07.0-0.zip",
+    "sha256": "435e6265738470b7ae6498b8a298a4025bacb9349656207ef54d0f069687ce57"
+  },
+  "TheDocumentFoundation.LibreOffice": {
+    "version": "26.8.1.1",
+    "kind": "libreoffice",
+    "filename": "LibreOffice_26.8.1_Win_x86-64.msi",
+    "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.1/win/x86_64/LibreOffice_26.8.1_Win_x86-64.msi",
+    "sha256": "c6298b10cfa1748bcbEdad94c62ce771e240e5021bfd6d7a967cd571b04b5312"
+  },
+  "Microsoft.VCRedist.2015+.x64": {
+    "version": "14.51.36247.0",
+    "kind": "vcredist",
+    "filename": "VC_redist-14.51.36247.0.x64.exe",
+    "url": "https://download.visualstudio.microsoft.com/download/pr/ebdab8e5-1d7b-4d9f-a11b-cbb1720c3b12/843068991DAAA1F73AD9F6239BCE4D0F6A07A51F18C37EA2A867E9BECA71295C/VC_redist.x64.exe",
+    "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
+  }
+}
