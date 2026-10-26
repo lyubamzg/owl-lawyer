@@ -5,6 +5,7 @@
 импортировать этот модуль. Только стандартная библиотека (python 3.9+).
 """
 import os
+import json
 import re
 import shutil
 import subprocess
@@ -14,6 +15,30 @@ from pathlib import Path
 
 IS_WIN = sys.platform.startswith('win')
 BASE = Path(__file__).resolve().parent
+
+
+def configure_windows_tools():
+    """Read installer paths without changing the user's global PATH."""
+    if not IS_WIN:
+        return {}
+    try:
+        config = json.loads((BASE.parent / 'runtime-tools.json').read_text(encoding='utf-8'))
+        if not isinstance(config, dict):
+            return {}
+        directories = config.get('tool_dirs', [])
+        if not isinstance(directories, list):
+            return {}
+        directories = [path for path in directories if isinstance(path, str) and Path(path).is_dir()]
+        os.environ['PATH'] = os.pathsep.join([*directories, os.environ.get('PATH', '')])
+        tessdata = config.get('tessdata_dir')
+        if isinstance(tessdata, str) and (Path(tessdata) / 'rus.traineddata').is_file():
+            os.environ['TESSDATA_PREFIX'] = tessdata
+        return config
+    except (OSError, ValueError):
+        return {}
+
+
+WINDOWS_RUNTIME = configure_windows_tools()
 
 
 def ascii_filename(name):
@@ -47,6 +72,12 @@ def soffice_cmd():
             if p:
                 return p
         return 'soffice'  # прежнее поведение: пусть ошибка будет привычной
+    configured = WINDOWS_RUNTIME.get('soffice')
+    if isinstance(configured, str) and Path(configured).is_file():
+        return configured
+    discovered = shutil.which('soffice') or shutil.which('libreoffice')
+    if discovered:
+        return discovered
     for p in (r'C:\Program Files\LibreOffice\program\soffice.exe',
               r'C:\Program Files (x86)\LibreOffice\program\soffice.exe'):
         if Path(p).exists():
