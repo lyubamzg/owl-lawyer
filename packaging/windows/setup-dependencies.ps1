@@ -2,17 +2,23 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
-    [string]$RequirementsFile = (Join-Path $PSScriptRoot 'requirements.txt'),
+    [string]$RequirementsFile,
     [switch]$InstallMissing,
     [switch]$InstallLibreOffice,
     [switch]$CheckOnly,
-    [string]$RussianModel = (Join-Path $PSScriptRoot 'rus.traineddata'),
-    [string]$DependencyManifest = (Join-Path $PSScriptRoot 'dependency-manifest.json'),
+    [string]$RussianModel,
+    [string]$DependencyManifest,
     [string]$ReportFile
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Windows PowerShell 5.1 can evaluate parameter defaults in a dot-sourcing
+# caller's directory. Resolve bundled files after entering this script instead.
+if (-not $RequirementsFile) { $RequirementsFile = Join-Path $PSScriptRoot 'requirements.txt' }
+if (-not $RussianModel) { $RussianModel = Join-Path $PSScriptRoot 'rus.traineddata' }
+if (-not $DependencyManifest) { $DependencyManifest = Join-Path $PSScriptRoot 'dependency-manifest.json' }
 
 function Update-ProcessPath {
     $paths = @(
