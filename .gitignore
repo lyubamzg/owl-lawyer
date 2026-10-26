@@ -13,19 +13,34 @@ venv/
 Сканы*/
 Ф-9-текст/
 
+# English output and scan directories (legacy names above remain ignored)
+output/
+output-*/
+scans/
+scans-*/
+f9-text/
+contract-templates/
+
 # рабочие книги ввода, портянки и анкеты
+input-workbook*.xlsx
+housing-input*.xlsx
+contracts-workbook*.xlsx
+contracts-demo.xlsx
+recognized-debtors.xlsx
+ledger*.xlsx
 Книга-ввода*.xlsx
-!Книга-ввода.xlsx
+!input-workbook.xlsx
 Книга-договоры*.xlsx
 *Портянка*.xlsx
 *портянка*.xlsx
-!Портянка (демо-вымышленная).xlsx
-!Демо (портянка заполненная).xlsx
-Анкета-бракоразводные.xlsx
-Анкета-потребительские.xlsx
-Ф-9 индекс.xlsx
+!ledger-demo.xlsx
+!demo-housing.xlsx
+family-questionnaire.xlsx
+consumer-questionnaire.xlsx
+f9-index.xlsx
 
 # отчёты о сверке
+validation-report*.txt
 Отчёт-сверки*.txt
 Выход.txt
 

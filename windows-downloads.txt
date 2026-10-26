@@ -1,0 +1,27 @@
+ССЫЛКИ ДЛЯ УСТАНОВКИ НА WINDOWS
+================================
+
+1) ПИТОН (Python)
+   https://www.python.org/downloads/windows/
+   Брать установщик «Windows installer (64-bit)».
+   Галочки при установке: «Add python.exe to PATH» + «tcl/tk and IDLE».
+
+2) TESSERACT OCR (кириллица!)
+   https://github.com/UB-Mannheim/tesseract/wiki
+   Файл: tesseract-ocr-w64-setup-...exe
+   В выборе компонентов отметить языковой пакет RUSSIAN.
+
+3) POPPLER (pdftoppm — разрезание PDF на страницы)
+   https://github.com/oschwartz10612/poppler-windows/releases
+   Файл: Release-24.xx.xx-0.zip (последний из списка).
+   Распаковать в C:\poppler, добавить папку ...\Library\bin в PATH
+   (как — в windows-installation.txt, раздел 4).
+
+4) LIBREOFFICE
+   https://ru.libreoffice.org/
+   Файл: LibreOffice_xx.x_Win_x86-64.msi
+   Установка «далее-далее», путь по умолчанию.
+
+
+ЧТО СТАВИТ УСТАНОВЩИК ПАКЕТА САМ (не качать отдельно):
+   openpyxl, python-docx — через pip при прогоне install-windows.bat.
