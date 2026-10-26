@@ -7,6 +7,7 @@ param(
     [switch]$InstallLibreOffice,
     [switch]$CheckOnly,
     [string]$RussianModel = (Join-Path $PSScriptRoot 'rus.traineddata'),
+    [string]$DependencyManifest = (Join-Path $PSScriptRoot 'dependency-manifest.json'),
     [string]$ReportFile
 )
 
@@ -103,6 +104,14 @@ function Find-Tool {
     param([ValidateSet('tesseract', 'pdftoppm', 'soffice')][string]$Name)
     $found = Get-Command "$Name.exe" -ErrorAction SilentlyContinue
     if ($found) { return $found.Source }
+    if ($Name -eq 'pdftoppm') {
+        $private = Join-Path $InstallDir 'tools\poppler'
+        if (Test-Path -LiteralPath $private) {
+            $binary = Get-ChildItem $private -Filter pdftoppm.exe -Recurse -File |
+                      Select-Object -First 1 -ExpandProperty FullName
+            if ($binary) { return $binary }
+        }
+    }
     # Custom installation locations are often registered without a PATH entry.
     foreach ($hive in @('HKCU:', 'HKLM:')) {
         $keys = @("$hive\Software\Microsoft\Windows\CurrentVersion\App Paths\$Name.exe")
@@ -165,6 +174,116 @@ function Install-WinGetPackage {
     Update-ProcessPath
 }
 
+function Get-WindowsBuild {
+    return [Environment]::OSVersion.Version.Build
+}
+
+function Get-DependencyPackage {
+    param([string]$Id)
+    $manifest = Get-Content -LiteralPath $DependencyManifest -Raw | ConvertFrom-Json
+    $property = $manifest.PSObject.Properties[$Id]
+    if (-not $property) { throw "No verified installer is configured for $Id." }
+    $package = $property.Value
+    if ($package.url -notmatch '^https://' -or $package.sha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        throw "Invalid download metadata for $Id."
+    }
+    return $package
+}
+
+function Get-VerifiedDownload {
+    param($Package)
+    $cache = Join-Path $env:LOCALAPPDATA 'OwlLawyer\Downloads'
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $file = Join-Path $cache $Package.filename
+    $expected = $Package.sha256.ToLower()
+    if ((Test-Path -LiteralPath $file) -and
+        (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLower() -eq $expected) {
+        return $file
+    }
+    $partial = $file + '.' + [guid]::NewGuid() + '.partial'
+    try {
+        Write-Host "Downloading $($Package.filename)..."
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -UseBasicParsing -Uri $Package.url -OutFile $partial -TimeoutSec 1800
+        if ((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLower() -ne $expected) {
+            throw "Checksum verification failed for $($Package.filename). Nothing was installed from this download."
+        }
+        Move-Item -LiteralPath $partial -Destination $file -Force
+        return $file
+    } finally {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+    }
+}
+
+function Invoke-PackageInstaller {
+    param([string]$File, [string]$Arguments, [switch]$Elevate)
+    $options = @{ FilePath = $File; ArgumentList = $Arguments; Wait = $true; PassThru = $true }
+    if ($Elevate) { $options.Verb = 'RunAs' }
+    try { $process = Start-Process @options }
+    catch { throw "Could not start the component installer. Allow the Windows administrator prompt and retry. $($_.Exception.Message)" }
+    if ($process.ExitCode -eq 3010) {
+        [IO.File]::WriteAllText((Join-Path $InstallDir 'setup-restart-required'), '1')
+        Write-Host 'A component requested a Windows restart after setup.'
+    } elseif ($process.ExitCode -ne 0) {
+        throw "Component installation failed (exit $($process.ExitCode)): $File. See setup.log."
+    }
+}
+
+function Test-VCRuntime {
+    param([string]$MinimumVersion)
+    $key = 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    if (Test-Path $key -ErrorAction SilentlyContinue) {
+        $item = Get-ItemProperty $key
+        if ($item.Installed -eq 1 -and [version]($item.Version.TrimStart('v')) -ge [version]$MinimumVersion) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Install-DirectPackage {
+    param([string]$Id)
+    $package = Get-DependencyPackage $Id
+    if ($package.kind -eq 'vcredist' -and (Test-VCRuntime $package.version)) { return }
+    if ($package.kind -in @('tesseract', 'poppler', 'libreoffice')) {
+        Install-DirectPackage 'Microsoft.VCRedist.2015+.x64'
+    }
+    $file = Get-VerifiedDownload $package
+    switch ($package.kind) {
+        'python' {
+            Invoke-PackageInstaller $file '/passive /norestart InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 Include_pip=1 Include_tcltk=1'
+        }
+        'tesseract' { Invoke-PackageInstaller $file '/S' -Elevate }
+        'vcredist' { Invoke-PackageInstaller $file '/install /passive /norestart' -Elevate }
+        'libreoffice' {
+            $msiexec = Join-Path $env:SystemRoot 'System32\msiexec.exe'
+            Invoke-PackageInstaller $msiexec ('/i "' + $file + '" /passive /norestart') -Elevate
+        }
+        'poppler' {
+            $destination = Join-Path $InstallDir 'tools\poppler'
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            Expand-Archive -LiteralPath $file -DestinationPath $destination -Force
+            if (-not (Get-ChildItem $destination -Filter pdftoppm.exe -Recurse -File | Select-Object -First 1)) {
+                throw 'The verified Poppler archive did not contain pdftoppm.exe.'
+            }
+        }
+        default { throw "Unsupported component installer type: $($package.kind)" }
+    }
+}
+
+function Install-Dependency {
+    param([string]$Id, [string]$Scope)
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ((Get-WindowsBuild) -ge 17763 -and $winget) {
+        Install-WinGetPackage $Id $Scope
+    } else {
+        Write-Host 'Using verified direct downloads (WinGet is unavailable on this system).'
+        Install-DirectPackage $Id
+        Update-ProcessPath
+    }
+}
+
 function Get-DependencyStatus {
     return [ordered]@{
         python = Find-Python
@@ -192,8 +311,8 @@ function Install-RussianModel {
 }
 
 function Initialize-SovaRuntime {
-    if (-not [Environment]::Is64BitOperatingSystem -or $env:OS -ne 'Windows_NT') {
-        throw 'SOVA setup requires 64-bit Windows 10 or Windows 11.'
+    if (-not [Environment]::Is64BitOperatingSystem -or $env:OS -ne 'Windows_NT' -or (Get-WindowsBuild) -lt 17134) {
+        throw 'SOVA setup requires 64-bit Windows 10 version 1803 (build 17134) or later.'
     }
     Update-ProcessPath
     $status = Get-DependencyStatus
@@ -206,7 +325,7 @@ function Initialize-SovaRuntime {
 
     if (-not $status.python) {
         if (-not $InstallMissing) { throw 'Python 3.11-3.14 (64-bit), including Tkinter and pip, is required. Enable installation of missing components or install Python manually.' }
-        Install-WinGetPackage 'Python.Python.3.14' 'user'
+        Install-Dependency 'Python.Python.3.14' 'user'
         $status.python = Find-Python
         if (-not $status.python) { throw 'Python was installed but its Tkinter/pip runtime could not be detected. Repair Python with the Tcl/Tk and pip options enabled, then retry setup.' }
     }
@@ -216,13 +335,13 @@ function Initialize-SovaRuntime {
     )) {
         if (-not $status[$tool.Key]) {
             if (-not $InstallMissing) { throw "$($tool.Name) is missing. Enable installation of missing components or install it manually." }
-            Install-WinGetPackage $tool.Package $tool.Scope
+            Install-Dependency $tool.Package $tool.Scope
             $status[$tool.Key] = Find-Tool $tool.Name
             if (-not $status[$tool.Key]) { throw "$($tool.Name) is still unavailable after installation. See setup.log." }
         }
     }
     if (-not $status.libreoffice -and $InstallLibreOffice) {
-        Install-WinGetPackage 'TheDocumentFoundation.LibreOffice' ''
+        Install-Dependency 'TheDocumentFoundation.LibreOffice' ''
         $status.libreoffice = Find-Tool 'soffice'
         if (-not $status.libreoffice) { throw 'LibreOffice was not detected after installation. Retry setup after a reboot if Windows requested one.' }
     }

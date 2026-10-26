@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #define ProjectRoot SourcePath + "..\.."
 
@@ -14,7 +14,7 @@ DefaultGroupName=СОВА
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
-MinVersion=10.0.17763
+MinVersion=10.0.17134
 SourceDir={#ProjectRoot}
 OutputDir={#ProjectRoot}\dist
 OutputBaseFilename=SOVA-Setup-{#AppVersion}-x64
@@ -67,6 +67,7 @@ Name: "{app}\incoming"; Flags: uninsneveruninstall
 ; Extract these before copying application files, so a dependency failure stops setup.
 Source: "packaging\windows\setup-dependencies.ps1"; Flags: dontcopy
 Source: "packaging\windows\requirements.txt"; Flags: dontcopy
+Source: "packaging\windows\dependency-manifest.json"; Flags: dontcopy
 Source: "app\*.py"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "app\icons\*.png"; DestDir: "{app}\app\icons"; Flags: ignoreversion
 Source: "app\input-workbook.xlsx"; DestDir: "{app}\app"; Flags: onlyifdoesntexist uninsneveruninstall
@@ -95,7 +96,9 @@ Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: """{app}\app\desktop_
 [UninstallDelete]
 ; The private runtime is disposable. Never recursively remove app or incoming.
 Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\tools\poppler"
 Type: files; Name: "{app}\runtime-tools.json"
+Type: files; Name: "{app}\setup-restart-required"
 
 [Code]
 procedure InitializeWizard;
@@ -115,9 +118,11 @@ begin
   Result := '';
   ExtractTemporaryFile('setup-dependencies.ps1');
   ExtractTemporaryFile('requirements.txt');
+  ExtractTemporaryFile('dependency-manifest.json');
   ExtractTemporaryFile('rus.traineddata');
   ErrorFile := ExpandConstant('{tmp}\setup-error.txt');
   DeleteFile(ErrorFile);
+  DeleteFile(ExpandConstant('{app}\setup-restart-required'));
   Arguments := '-NoProfile -ExecutionPolicy Bypass -File "' +
     ExpandConstant('{tmp}\setup-dependencies.ps1') + '" -InstallDir "' +
     ExpandConstant('{app}') + '" -RequirementsFile "' +
@@ -139,4 +144,9 @@ begin
   end;
   if Result <> '' then
     Result := Result + #13#10#13#10 + CustomMessage('LogLocation');
+end;
+
+function NeedRestart: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\setup-restart-required'));
 end;
