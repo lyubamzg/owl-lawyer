@@ -105,3 +105,6 @@ $failed = $false
 try { Initialize-SovaRuntime } catch { $failed = $_.Exception.Message -match 'simulated install failure' }
 Assert-True $failed 'A failed dependency command must stop setup'
 Write-Host 'PASS: Python detection, native exit codes/stderr, consent, reuse, LibreOffice opt-in, missing tools, read-only checks, and failure propagation'
+# Native failure probes deliberately set LASTEXITCODE. Do not let the Actions
+# PowerShell wrapper mistake those handled failures for a failed test suite.
+exit 0
