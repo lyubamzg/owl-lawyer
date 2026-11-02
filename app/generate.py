@@ -126,8 +126,21 @@ PAREN_RE = re.compile(r'\s*\([^()]*\)')
 
 
 def clean_fio(fio):
-    """Убирает девичью фамилию в скобках: «Романова (Сурмава) И.Г.» → «Романова И.Г.»."""
+    """Убирает девичью фамилию в скобках: «Иванова (Сурмава) И.Г.» → «Иванова И.Г.»."""
     return PAREN_RE.sub('', fio).strip()
+
+
+# выдуманные «Примерная область, Примерный район» в адрес не попадают:
+# адрес берётся из справки Ф-9 (см. import_housing.parse_f9_addr_parts)
+PLACEHOLDER_ADDR_RE = re.compile(
+    r'(?i)(?:Примерн(?:ая|ой|ого|ые|ый|ое)\s+(?:область|район)\s*,?\s*)+')
+
+
+def clean_addr(addr):
+    """Адрес для документа: без выдуманных «Примерная область/Примерный район»."""
+    a = re.sub(r'\s+', ' ', str(addr or '')).strip()
+    a = PLACEHOLDER_ADDR_RE.sub('', a).strip(' ,;')
+    return a
 
 
 def fio_short(fio, fem):
@@ -428,7 +441,7 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
                 persons.append(person)
         base = {'num': n, 'row': row, 'typ': typ, 'cat': cat, 'ls': ls,
                 'sud': cell_str(c.get('Суд (шапка)')).split('\n'),
-                'addr': cell_str(c.get('Адрес регистрации')),
+                'addr': clean_addr(cell_str(c.get('Адрес регистрации'))),
                 'housing': cell_str(c.get('Тип жилья (текст)')) or 'отдельной квартиры',
                 'sost': dates.get('sost'), 'd1': dates.get('d1'), 'd2': dates.get('d2'),
                 'p1': dates.get('p1'), 'p2': dates.get('p2'),

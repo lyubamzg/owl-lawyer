@@ -15,7 +15,7 @@
 автоматически по цифрам в первых строках OCR каждой страницы (затем по словам
 «лицевой счёт/л/с» в тексте) и справки привязываются к своим ЛС
 (лист «Ф-9 справки» в книге). Запасной способ: ЛС в имени файла
-(«Ф-9 ЛС065005800.pdf») или вручную в «f9-index.xlsx».
+(«Ф-9 ЛС000000101.pdf») или вручную в «f9-index.xlsx».
 
 Результат: «housing-input.xlsx»:
   листы Заявления и Должники заполнены, лист «Сверка импорта» — что проверить.
@@ -47,7 +47,7 @@ OUT_BOOK = BASE / 'housing-input.xlsx'
 
 DATE_RE = re.compile(r'\b(\d{2}[.,]\d{2}[.,](?:19|20)\d{2})\b')
 PASPORT_RE = re.compile(r'(?<![\d.])((?:4|8)\d{3})\s?,?\s?(\d{6})(?!\d)')
-# лицевой счёт, написанный ВНУТРИ справки: «лицевой счёт № 065005800», «л/с 065005800»
+# лицевой счёт, написанный ВНУТРИ справки: «лицевой счёт № 000000101», «л/с 000000101»
 # допустимы пробелы/дефисы/точки внутри номера: «065 005 800», «065-005-800»
 LS_TEXT_RE = re.compile(
     r'(?:лицев[а-яё]+\s*сч[еёт]+[а-яё]*|л\s*/\s*с\s*сч[еёт]+[а-яё]*|л\s*/\s*с|лс|кл\.\s*сч[еёт]+[а-яё]*)'
@@ -236,10 +236,10 @@ def collect_groups(items, warn):
                 seen[key] = {**p, 'rows_seen': {r['row']}}
                 merged.append(seen[key])
         # похожие фамилии при ОДИНАКОВЫХ инициалах — варианты одного лица:
-        # «Романов (Сурмава) И.Г.» и «Романова (Сурмава) И.Г.» склеиваются,
+        # «Иванов (Сурмава) И.Г.» и «Иванова (Сурмава) И.Г.» склеиваются,
         # а «Крылов Г.Н.» и «Крылов А.Г.» (разные инициалы) остаются раздельно
         # похожие фамилии при ОДИНАКОВЫХ инициалах — варианты одного лица:
-        # «Романов (Сурмава) И.Г.» и «Романова (Сурмава) И.Г.» склеиваются,
+        # «Иванов (Сурмава) И.Г.» и «Иванова (Сурмава) И.Г.» склеиваются,
         # а «Крылов Г.Н.» и «Крылов А.Г.» (разные инициалы) остаются раздельно
         core = lambda s: re.sub(r'\s*\([^)]*\)', '', s).strip().lower()
         for i, a in enumerate(merged):
@@ -302,7 +302,7 @@ LS_JUNK = ('российская', 'область', 'справка', 'акци
 
 def ls_digit_variants(line):
     """Строка угла страницы → набор строк-цифр: прямые цифры + расшифровка букв,
-    в которые OCR превратил цифры («ДС Об Бо 9590» → «065009590», «007-690» → «007690»)."""
+    в которые OCR превратил цифры («ДС Об Бо 1234» → «000001234», «007-690» → «007690»)."""
     line = DATE_SHORT_RE.sub(' ', line)
     low = line.strip().lower()
     if any(k in low for k in LS_JUNK):
@@ -368,6 +368,10 @@ def ocr_pdf(path: Path, tmpdir: Path):
     Страница без шапки «Выдана гр.» считается продолжением предыдущей
     (двухстраничная справка), и её текст приклеивается к предпоследней.
 
+    Страница, на которой есть блок «Согласно документу:» (основание
+    проживания), но признак категории не распознался, читается ещё раз
+    в режиме `--psm 6` — он лучше берёт залитый/затёртый блок.
+
     """
     subprocess.run(['pdftoppm', '-r', '300', '-gray', '-png',
                     str(path), str(tmpdir / 'p')], check=True)
@@ -377,7 +381,16 @@ def ocr_pdf(path: Path, tmpdir: Path):
         n = int(re.search(r'p-(\d+)', img.stem).group(1))
         subprocess.run(['tesseract', str(img), str(tmpdir / f't{n}'), '-l', 'rus',
                         '--psm', '4'], check=True, capture_output=True)
-        pages.append((n, (tmpdir / f't{n}.txt').read_text(encoding='utf-8')))
+        txt = (tmpdir / f't{n}.txt').read_text(encoding='utf-8')
+        if _need_second_ocr(txt):
+            subprocess.run(['tesseract', str(img), str(tmpdir / f'b{n}'), '-l', 'rus',
+                            '--psm', '6'], check=True, capture_output=True)
+            extra = (tmpdir / f'b{n}.txt').read_text(encoding='utf-8')
+            if extra.strip():
+                txt = txt + '\n' + extra
+                print(f'· страница {n}: блок «Согласно документу» перечитан (psm 6)',
+                      flush=True)
+        pages.append((n, txt))
         print(f'· страница {n} распознана', flush=True)
     merged = []
     for n, t in pages:
@@ -398,7 +411,7 @@ F9_FIO_RE = re.compile(
 F9_DR_RE = re.compile(
     r'Выдана\s+гр[а-яё.]*\s*([^\n]{0,140}?)'
     r'(\d{2}[.,]\d{2}[.,]\d{4})[^\n]{0,20}?рожден', re.IGNORECASE)
-# адрес в справке: «в доме № 38, кв.№ 16, корпус № , по улице Московское ш., г. Пример»
+# адрес в справке: «в доме № 38, кв.№ 16, корпус № , по улице Тестовое ш., г. Пример»
 F9_ADDR_RE = re.compile(
     r'в\s*д\s*оме\s*№?\s*\.?\s*(\d{1,4})'          # дом
     r'[^|\n]{0,45}?к\.?\s*в?\.?\s*№?\s*\.?\s*(\d{1,4})'  # квартира
@@ -429,6 +442,315 @@ def parse_f9_addr(text):
     return dom, kv, ul
 
 
+# ------------------------------------------------------------ адрес ----
+# Адрес в справках Ф-9 записан по-разному:
+#   МГА:            «по адресу: п. Пример, Тестовая д. 33 кв. 107; к. 2»
+#                   «в доме принадлежащем: Муниципальный фонд (Примерское поселение)»
+#   АО «Тепловые сети»: в шапке «Примерная область»,
+#                   «в доме № 27, кв.№ 63, корпус № ,по улице Тестовое ш., г. Тосно»
+#                   «в принадлежащем Примерское городское поселение»
+# В документ адрес собирается ТОЛЬКО из этих строк: область, район (МО),
+# населённый пункт, улица, дом, корпус (если есть), квартира.
+# Ничего не додумывается: выдуманные «Примерная область, Примерный район»
+# в адрес не подставляются.
+
+ADDR_KEYS = ('oblast', 'rayon', 'np', 'ul', 'dom', 'korpus', 'kv')
+
+# строка адреса в справке (нужна, чтобы отделить её от шапки и от «принадлежащем»)
+F9_ADDR_LINE_RE = re.compile(
+    r'по\s+адресу|в\s+д\s*оме|по\s+улиц|адрес\s+мест|адрес\s+регистрац|'
+    r'адрес\s+прожив', re.IGNORECASE)
+# «в доме принадлежащем: …» / «в принадлежащем …» — кто владеет домом
+F9_PRINADLEZH_RE = re.compile(r'принадлежащем[:\s]*(.+)$', re.IGNORECASE)
+# субъект РФ в шапке: «Примерная область», «Примерная област» (опечатка OCR)
+F9_OBLAST_RE = re.compile(
+    r'^([А-ЯЁ][а-яё\-]*(?:\s+[А-ЯЁ][а-яё\-]*)*\s+(?:облас\w*|обл\.?|край))$')
+# адресный кусок: «п. Пример», «г. Тосно», «Тестовая»
+NP_RE = re.compile(
+    r'^((?:г|гп|пгт|с|д|пос|п|ст)\.?\s*)?'
+    r'([А-ЯЁ][а-яё\-]*(?:\s+[А-ЯЁ][а-яё\-]*){0,2})$')
+# улица: «по улице Тестовое ш.», «ул. Ленина»
+UL_RE = re.compile(
+    r'^(?:по\s+|то\s+|во\s+)?'
+    r'(?:улице|улица|ул\.?|проспект\w*|просп\.?|пер(?:еулок)?|бул(?:ьвар)?|'
+    r'шоссе|ш\.?|наб\.?|пр-т|пр\.?д\.?|мкр\.?|проезд\w*)\s+(.+)$',
+    re.IGNORECASE)
+# дом: «в доме № 27», «д. 33»
+DOM_RE = re.compile(r'(?<![а-яё])(?:в\s*)?(?:дом(?:е)?|д)\s*№?\s*\.?\s*(\d{1,4})',
+                     re.IGNORECASE)
+# квартира: «кв. 107», «кв.№6» (только «кв.» — иначе «к. 3» не квартира)
+KV_RE = re.compile(r'(?<![а-яё])кв\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
+# квартира, где OCR вместо цифры прочитал букву: «кв. б» → кв. 6
+KV_ALT_RE = re.compile(r'(?<![а-яё])кв\.?\s*№?\s*\.?\s*([а-яё])', re.IGNORECASE)
+# корпус: «корпус № 2», «корп. 2»
+KORPUS_RE = re.compile(r'корп(?:ус)?\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
+# корпус у МГА записан одной буквой: «кв. 107; к. 2» (OCR иногда теряет точку: «к1»)
+KORPUS_SHORT_RE = re.compile(r'(?<![а-яё])к\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
+# OCR путает цифры с буквами: «кв. б» — это кв. 6
+OCR_DIGIT = {'б': '6', 'з': '3', 'ч': '4', 'о': '0', 'и': '1', 'д': '2'}
+
+
+def _addr_part(s):
+    """Кусок адреса без мусора OCR: лишние пробелы, кавычки, запятые по краям.
+
+    Точки внутри не трогаем: «г. Тосно», «Тестовое ш.», «д. 33» — точки
+    в названиях значащие.
+    """
+    s = re.sub(r'\s+', ' ', str(s or '')).strip(' ,;‚\'"')
+    s = s.lstrip('.·-–—').strip()
+    return s
+
+
+def _norm_oblast(v):
+    """OCR обрезает слово «область»: «Примерная облас» → «… область»."""
+    v = _addr_part(v)
+    v = re.sub(r'\s+обл\.?$', ' область', v, flags=re.IGNORECASE)
+    v = re.sub(r'\s+облас\w*$', ' область', v, flags=re.IGNORECASE)
+    return v
+
+
+# ------------------------------------------- категория должника по справке Ф-9 --
+# «Квартиросъемщик: ФИО» / «Собственник: ФИО» — прямое указание роли.
+# Имя после роли — с заглавной буквы, поэтому регистр учитываем только в самом
+# слове «роли» (иначе «собственником является» приняли бы за «Собственник: …»).
+# OCR теряет первые буквы («обственник», «иросъемщик») — их не требуем.
+TENURE_ROLE_RE = re.compile(
+    r'(?i:([а-яё]{0,12}с[ъь]?[её]мщ[ие][кйе]|с?обственник))\s*:?\s*([А-ЯЁ][^\n]{0,70})')
+# основание «наниматель»: жилой ордер администрации, договор найма
+TENURE_RENT_RE = re.compile(
+    r'(жилой\s+ордер|ордер\s+обменный|ордер\s+администрации|орд\w*\s+администраци|'
+    r'ордер\s*№|дер\s*:\s*обменн|обменн\w*\s*№|горисполком|'
+    r'социального\s+найма|договор\s+найма)', re.IGNORECASE)
+# основание «собственник»: договор купли-продажи, приватизация, передача в
+# собственность, свидетельство о наследстве, выписка из ЕГРН, доля
+TENURE_OWN_RE = re.compile(
+    r'(договор\s+купли[- ]продаж|купли[- ]продаж|приватиз|'
+    r'передач[аие][^\n]{0,60}?собственност|наследств\w*|завещани|'
+    r'праве\s+на\s+на[сз]ледств|свидетельств\w*\s+о\s+праве|егрн|доля\s*:|'
+    r'[а-яё]{0,8}нник\s*:|уфрс)', re.IGNORECASE)
+# слабый признак: «собственником является …» — в примечаниях часто про умершего
+TENURE_WEAK_RE = re.compile(r'собственник(?:ом)?\s+является', re.IGNORECASE)
+# квартира в муниципальной собственности → собственником жилец быть не может
+TENURE_MUNI_RE = re.compile(
+    r'в\s+доме\s+принадлежащем\s*:?\s*[^,\n]{0,60}?муниципал', re.IGNORECASE)
+
+
+def _has_tenure_signal(text):
+    """Есть ли в тексте хоть какой-то признак основания проживания."""
+    return bool(TENURE_ROLE_RE.search(text) or TENURE_RENT_RE.search(text)
+                or TENURE_OWN_RE.search(text))
+
+
+def _need_second_ocr(text):
+    """Признак категории не распознался — блок с основанием надо перечитать.
+
+    Обычно в справке Ф-9 есть строка «Согласно документу: …», но на
+    залитом/затёртом фрагменте OCR её коверкает, и признак теряется.
+    Второй проход в режиме `--psm 6` этот блок читает заметно лучше.
+    """
+    return not _has_tenure_signal(text)
+
+
+def fio_surname(s):
+    """Фамилия из ФИО в любой записи: «Бертова Н.И.», «Бертова Надежда Ивановна»."""
+    s = re.sub(r'\s*\([^)]*\)', '', str(s or '')).lower().strip()
+    s = re.sub(r'[^а-яёa-z\- ]', ' ', s)
+    parts = s.split()
+    return parts[0] if parts else ''
+
+
+def detect_tenure(text, surnames=()):
+    """Категория должника по справке Ф-9: наниматель / собственник.
+
+    Возвращает (категория, основание, ранг). Ранг — надёжность признака:
+    0 — прямо названа роль должника из справки («Квартиросъемщик: X»,
+    «Собственник: X») и фамилия совпала с должником из портянки;
+    1 — основание в документе (ордер / договор); 2 — роль без совпадения
+    фамилии; 3 — «собственником является …» в примечании.
+    """
+    t = str(text or '')
+    surn = {s for s in surnames if s}
+    roles = []
+    for m in TENURE_ROLE_RE.finditer(t):
+        low = m.group(1).lower()
+        cat = 'наниматель' if 'мщ' in low else 'собственник'
+        name = fio_surname(m.group(2))
+        rank = 0 if (name and name in surn) else 2
+        ev = re.sub(r'\s+', ' ', m.group(0)).strip(' .,;:')
+        roles.append((rank, cat, ev, name))
+    exact = [r for r in roles if r[0] == 0]
+    if exact:
+        # должник-сообственник в справке — заявление по форме собственника
+        own = next((r for r in exact if r[1] == 'собственник'), None)
+        r = own or exact[0]
+        return r[1], r[2], 0
+    if roles:
+        r = roles[0]
+        return r[1], r[2], 2
+    m_rent = TENURE_RENT_RE.search(t)
+    m_own = TENURE_OWN_RE.search(t)
+    if m_rent or m_own:
+        if m_rent and (not m_own or m_rent.start() <= m_own.start()):
+            return 'наниматель', re.sub(r'\s+', ' ', m_rent.group(0)).strip(' .,;:'), 1
+        return 'собственник', re.sub(r'\s+', ' ', m_own.group(0)).strip(' .,;:'), 1
+    m = TENURE_WEAK_RE.search(t)
+    if m:
+        return 'собственник', re.sub(r'\s+', ' ', m.group(0)).strip(), 3
+    # блок «Согласно документу» в справке может быть не заполнен или нечитаем;
+    # если квартира в муниципальной собственности, жилец — наниматель
+    m = TENURE_MUNI_RE.search(t)
+    if m:
+        return ('наниматель',
+                'квартира принадлежит муниципальному фонду (основание в справке не указано)', 4)
+    return '', '', 9
+
+
+def detect_tenure_ls(texts, surnames=()):
+    """Категория по всем справкам одного лицевого счёта.
+
+    Берётся самый надёжный признак; при равенстве — первый по порядку.
+    """
+    best = ('', '', 9)
+    for text in texts:
+        cat, ev, rank = detect_tenure(text, surnames)
+        if cat and rank < best[2]:
+            best = (cat, ev, rank)
+    return best[0], best[1]
+
+
+def parse_addr_parts(raw):
+    """Строка адреса → {oblast, rayon, np, ul, dom, korpus, kv}.
+
+    Куски разделяются запятыми/точками с запятой, но внутри куска дом,
+    квартира и корпус могут стоять рядом с названием улицы
+    («Тестовая д. 33 кв. 107») — поэтому они вырезаются из куска,
+    а остаток считается улицей или населённым пунктом.
+    """
+    out = {k: '' for k in ADDR_KEYS}
+    for part in re.split(r'[,;‚]', str(raw or '')):
+        p = _addr_part(part)
+        if not p:
+            continue
+        p = re.sub(r'^[^,]{0,15}?\bпо\s+адресу\b\s*[:.]?\s*', '', p,
+                   flags=re.IGNORECASE).strip()
+        p = re.sub(r'^(?:адрес\s+регистрации|адрес)\s*[:.]?\s*', '', p,
+                   flags=re.IGNORECASE).strip()
+        if not p:
+            continue
+        rest = p
+        for rx, key in ((DOM_RE, 'dom'), (KORPUS_RE, 'korpus'), (KV_RE, 'kv')):
+            m = rx.search(rest)
+            if m:
+                out[key] = m.group(1)
+                rest = (rest[:m.start()] + ' ' + rest[m.end():]).strip()
+        if not out['kv']:
+            m = KV_ALT_RE.search(rest)
+            if m:
+                out['kv'] = m.group(1)
+                rest = (rest[:m.start()] + ' ' + rest[m.end():]).strip()
+        if not out['korpus']:
+            m = KORPUS_SHORT_RE.search(rest)
+            if m:
+                out['korpus'] = m.group(1)
+                rest = (rest[:m.start()] + ' ' + rest[m.end():]).strip()
+        rest = _addr_part(rest)
+        if not rest:
+            continue
+        m = UL_RE.match(rest)
+        if m:
+            out['ul'] = _addr_part(m.group(1))
+            continue
+        if F9_OBLAST_RE.match(rest):
+            out['oblast'] = _norm_oblast(rest)
+            continue
+        if re.search(r'(?:район|городской округ|муниципальное образование|поселение)$',
+                     rest.lower()):
+            out['rayon'] = rest
+            continue
+        m = NP_RE.match(rest)
+        if m and not out['np']:
+            prefix = (m.group(1) or '').strip()
+            name = _addr_part(m.group(2) or '')
+            if name:
+                out['np'] = f'{prefix} {name}'.strip() if prefix else name
+            continue
+        # остаток без подписи: если населённого пункта ещё нет — это он,
+        # иначе — название улицы (в адресе МГА порядок: нп, затем улица)
+        if not re.match(r'^[А-ЯЁ]', rest):
+            continue                     # «корпус №», обрывки цифр — не адрес
+        if not out['np']:
+            out['np'] = rest
+        elif not out['ul']:
+            out['ul'] = rest
+    # квартира/корпус, где OCR заменил цифру буквой («кв. б» → «кв. 6»)
+    for key in ('kv', 'dom', 'korpus'):
+        v = out[key]
+        if len(v) == 1 and v.lower() in OCR_DIGIT:
+            out[key] = OCR_DIGIT[v.lower()]
+    return out
+
+
+def parse_f9_addr_parts(text):
+    """Справка Ф-9 → компоненты адреса {oblast, rayon, np, ul, dom, korpus, kv}.
+
+    Область — из шапки справки, район (муниципальное образование) — из строки
+    «в принадлежащем …» (у МГА она в скобках: «Муниципальный фонд (Примерское
+    поселение)»), остальное — из адресной строки.
+    """
+    out = {k: '' for k in ADDR_KEYS}
+    lines = [_addr_part(l) for l in str(text or '').splitlines()]
+    addr_lines = [i for i, l in enumerate(lines)
+                  if F9_ADDR_LINE_RE.search(l) and 'принадлежащем' not in l.lower()]
+    head = lines[:addr_lines[0]] if addr_lines else lines
+    for l in head:
+        m = F9_OBLAST_RE.match(l)
+        if m:
+            out['oblast'] = _norm_oblast(m.group(1))
+            break
+    for l in lines:
+        m = F9_PRINADLEZH_RE.search(l)
+        if m:
+            v = _addr_part(m.group(1))
+            mm = re.search(r'\(([^()]*)\)', v)   # «Муниципальный фонд (Примерское поселение)»
+            if mm:
+                v = _addr_part(mm.group(1))
+            if v:
+                out['rayon'] = v
+            break
+    block = ' , '.join(lines[i] for i in addr_lines[:2])
+    if block:
+        parts = parse_addr_parts(block)
+        for k, v in parts.items():
+            if v and not out[k]:
+                out[k] = v
+    return out
+
+
+def fmt_addr(parts):
+    """Компоненты адреса → строка для документа (в порядке Ф-9)."""
+    out = []
+    if parts.get('oblast'):
+        out.append(parts['oblast'])
+    if parts.get('rayon'):
+        out.append(parts['rayon'])
+    if parts.get('np'):
+        out.append(parts['np'])
+    if parts.get('ul'):
+        ul = re.sub(r'\.{2,}', '.', parts['ul'])
+        ul = re.sub(r'[\[\]()]+$', '', ul).strip(' ,;')
+        if not re.match(r'^(?:ул|улица|просп|пр\.|пер|бул|шоссе|ш\.|наб|пр-т|проезд)',
+                        ul, re.IGNORECASE):
+            ul = f'ул. {ul}'
+        out.append(ul)
+    if parts.get('dom'):
+        out.append(f"д. {parts['dom']}")
+    if parts.get('korpus'):
+        out.append(f"корп. {parts['korpus']}")
+    if parts.get('kv'):
+        out.append(f"кв. {parts['kv']}")
+    return ', '.join(out)
+
+
 def parse_f9_birth(text):
     """Шапка справки Ф-9 → (ФИО полностью, дата рождения 'ДД.ММ.ГГГГ').
 
@@ -450,6 +772,142 @@ def parse_f9_birth(text):
     return re.sub(r'\s+', ' ', fio).strip(), dr
 
 
+# служебные строки бланка: подпись паспортиста, нотариуса, выдавшего справку.
+# Это НЕ зарегистрированные лица — в «Должники» им не место.
+SERVICE_LINE_RE = re.compile(
+    r'(паспортист|нотариус|нот\.|исполнител|специалист|регистратор|'
+    r'выдал[ао]?\s+справк|выдана\s+для|с\s+выдачей)', re.IGNORECASE)
+# конец бланка: после этой отметки в справке идут только подписи
+TAIL_MARKER_RE = re.compile(
+    r'(справка\s+выдана\s+для\s+предъявления|для\s+предъявления\s+по\s+требованию)',
+    re.IGNORECASE)
+# в графе «Собственник:» встречаются организации («Адм. М.М.», «УФРС …») —
+# это не должники
+ORG_SURNAME_RE = re.compile(
+    r'^(адм|администраци\w*|му|мо|гу|пиб|уфрс|куми|предприяти\w*|обществ\w*|'
+    r'ооо|зао|оао|пао|дк|домоуправлени\w*|управляющ\w*|фонд|'
+    r'муниципальн\w*|региональн\w*|областн\w*)$')
+# «Гр. Фамилия Имя Отчество» — шапка справки МГА (в форме АО «Тепловые сети»
+# шапка другая — «Выдана гр. … года рождения», её разбирает parse_f9_birth)
+MGA_HEADER_RE = re.compile(r'Гр\.?\s+')
+# конец строки-человека: дальше идёт блок «основание» (договор, ордер,
+# примечание) — даты оттуда к дате рождения отношения не имеют
+BLOCK_STOP_RE = re.compile(
+    r'(согласно\s+документу|согласно\s+выданному|примечание\s*:|'
+    r'справка\s+выдана|собственник\s*:|квартиросъ[её]мщик|наниматель\s*:|'
+    r'выдан\s*:|жилая\s+площадь|снята\s+с\s+регистрации|убыл)', re.IGNORECASE)
+# начало строки «Собственник: ФИО» / «Квартиросъемщик: ФИО» — OCR теряет
+# буквы, поэтому ищем по корню слова
+ROLE_PREFIX_RE = re.compile(
+    r'(собственник|обственник|ник\s*:|мщик|нанимател)\s*:?\s*$', re.IGNORECASE)
+# в графе «Место рождения» не место рождения: родственные отношения и служебные
+# слова, попавшие из соседних строк OCR
+JUNK_PLACE_RE = re.compile(
+    r'(Мать|Отчец|Брат|Сестра|Сын|Дочь|Внук|Внучка|Правнук|Примечание|'
+    r'Племян|Невестк|Зять|Тесть|Теща|Шурин|Деверь|Св[её]кор|Пасынок|Пасынка|'
+    r'не\s+указано|'
+    r'Собственник|Квартиросъемщик|Квартиросъёмщик|Наниматель|доля|'
+    r'Паспортист|Страница|отношен|Родственн|выдан|Регистрац)', re.IGNORECASE)
+
+
+def _line_bounds(text, pos):
+    """Границы строки, содержащей pos: (начало, конец без перевода строки)."""
+    start = text.rfind('\n', 0, pos) + 1
+    end = text.find('\n', pos)
+    if end == -1:
+        end = len(text)
+    return start, end
+
+
+def parse_f9_header(text):
+    """Шапка справки МГА «Гр. Фамилия Имя Отчество … дд.мм.гггг г.р.».
+
+    Возвращает (ФИО полностью, дата рождения). Дата может стоять на следующей
+    строке — тогда она всё равно попадает в «до 120 символов» после имени.
+    """
+    m = MGA_HEADER_RE.search(text)
+    if not m:
+        return '', ''
+    seg = text[m.end(): m.end() + 160]
+    nm = re.match(r'([А-ЯЁ][а-яё\-]{2,}(?:\s+[А-ЯЁ][а-яё\-]{2,}){1,2})', seg)
+    if not nm:
+        return '', ''
+    name = re.sub(r'\s+', ' ', nm.group(1)).strip()
+    tail = seg[nm.end(): nm.end() + 60]
+    d = re.search(r'(\d{2}[.,]\d{2}[.,]\d{4})\s*г', tail)
+    return name, (d.group(1).replace(',', '.') if d else '')
+
+
+def _person_key(name):
+    """Ключ лица по фамилии и инициалам: «Иванов И.И.» → («иванов», «ИИ»)."""
+    w = re.sub(r'\s*\([^)]*\)', '', str(name or '')).split()
+    if len(w) < 2:
+        return None
+    inits = []
+    for t in w[1:]:
+        if '.' in t:
+            inits.extend(ch.upper() for ch in t if ch.isalpha())
+        else:
+            inits.append(t[0].upper())
+    return (w[0].lower(), ''.join(inits))
+
+
+def merge_short_names(rows):
+    """Короткие ФИО (с инициалами) заменяем полными, если они есть по этому же ЛС.
+
+    На разных страницах одной справки одно и то же лицо читается то полностью
+    («Иванов Пётр Сергеевич»), то инициалами («Иванов П.С.») — в документе
+    нужно полное ФИО.
+    """
+    fulls = {}
+    for r in rows:
+        k = _person_key(r[1])
+        if k and len(str(r[1]).split()) >= 3:
+            fulls.setdefault(k, r[1])
+    for r in rows:
+        k = _person_key(r[1])
+        if k and len(str(r[1]).split()) < 3 and k in fulls:
+            r[1] = fulls[k]
+    return rows
+
+
+def find_dr_by_name(texts, fio):
+    """Дата рождения рядом с «Имя Отчество» в тексте справки.
+
+    Нужна там, где OCR потерял начало фамилии в таблице («о НИКОВ Юрий
+    Анатольевич 01.05.1962»): имя с отчеством уцелело, и дата рядом с ним.
+    """
+    w = re.sub(r'\s*\([^)]*\)', '', str(fio or '')).split()
+    if len(w) < 3:
+        return ''
+
+    def word_pat(word):
+        # первые 4 буквы обязательны, дальше — по одной необязательно
+        # («Анатольевич» совпадёт и с «Анатолье», и с «Анат.»)
+        out = re.escape(word[:4])
+        for ch in word[4:]:
+            out += '(?:' + re.escape(ch) + ')?'
+        return out
+
+    rx = re.compile(word_pat(w[1]) + r'\s+' + word_pat(w[2]), re.IGNORECASE)
+    for t in texts:
+        m = rx.search(t)
+        if not m:
+            continue
+        end = t.find('\n', m.end())
+        line = t[m.end(): end if end != -1 else len(t)]
+        md = DATE_RE.search(line)
+        if md:
+            return md.group(1).replace(',', '.')
+        # дата на следующей строке — только если она там сразу начинается
+        if end != -1:
+            nxt = t[end + 1:].split('\n')[0]
+            md = re.match(r'\s*(\d{2}[.,]\d{2}[.,]\d{4})', nxt)
+            if md:
+                return md.group(1).replace(',', '.')
+    return ''
+
+
 def parse_f9(text):
     """Текст справки ф.9 → список лиц: {fio, init, dr, place, pasport, kem}."""
     persons = {}
@@ -468,6 +926,20 @@ def parse_f9(text):
     if fio:
         w = fio.split()
         add(w[0], w[1][0] + w[2][0] if len(w) >= 3 else '?', fio, dr=dr)
+    # шапка справки МГА: «Гр. Фамилия Имя Отчество … г.р.» — тот же жилец,
+    # но в форме МГА нет слов «Выдана гр.», и OCR часто калечит отчество
+    if not fio and not re.search(r'Выдана\s+гр', text, re.IGNORECASE):
+        fio, dr = parse_f9_header(text)
+        if fio:
+            w = fio.split()
+            if not dr:
+                # в форме МГА дата рождения помечена «гр.»; если в шапке её нет
+                # (OCR разнёс её по странице: «Гр. Васильев Иван Алексеевич» …
+                # «14.01.2006 гр.»), берём дату с такой пометкой
+                mg = re.search(r'(\d{2}[.,]\d{2}[.,]\d{4})\s*г\s*\.?\s*р', text, re.IGNORECASE)
+                if mg:
+                    dr = mg.group(1).replace(',', '.')
+            add(w[0], w[1][0] + w[2][0] if len(w) >= 3 else '?', fio, dr=dr)
     # таблица зарегистрированных — до раздела о выбывших;
     # шапку «Выдана гр. …» не разбираем как таблицу (там ФИО в дательном падеже,
     # не зарегистрированное лицо — иначе мусорная строка попадает в «Должники»)
@@ -478,11 +950,35 @@ def parse_f9(text):
     cut = re.search(r'выбывш[а-яё]*|Члены семьи', seg, re.IGNORECASE)
     if cut:
         seg = seg[:cut.start()]
+    # после отметки «выдана для предъявления» идут только подписи бланка
+    tail = TAIL_MARKER_RE.search(seg)
+    tail_pos = tail.start() if tail else -1
     spans = [(m.start(), m.end(), m) for m in PERSON_RE.finditer(seg)]
     for j, (s0, e0, m) in enumerate(spans):
-        nxt = spans[j + 1][0] if j + 1 < len(spans) else len(seg)
-        after = seg[e0:nxt]
         surname = re.sub(r'\s+', ' ', m.group(1))
+        l_start, l_end = _line_bounds(seg, s0)
+        # служебные строки (паспортист, нотариус, «выдан: …») — не должники
+        if tail_pos != -1 and s0 > tail_pos:
+            continue
+        prev_start, _ = _line_bounds(seg, max(0, l_start - 1))
+        if SERVICE_LINE_RE.search(seg[prev_start:l_end]):
+            continue
+        if ORG_SURNAME_RE.match(re.sub(r'\s*\([^)]*\)', '', surname).lower()):
+            continue
+        # текст после ФИО берём ТОЛЬКО до конца строки таблицы: иначе в
+        # «место рождения» и «дату рождения» попадают договор, примечание
+        # и дата выдачи справки (и в документе — чужая дата рождения)
+        after = seg[e0:l_end]
+        # строка вида «Собственник: ФИО доля: 1/4» / «Квартиросъемщик: ФИО» —
+        # здесь только имя, ни даты рождения, ни места рождения нет
+        role_line = bool(ROLE_PREFIX_RE.search(seg[l_start:s0]))
+        nxt_start = l_end + 1
+        nxt_end = seg.find('\n', nxt_start)
+        if nxt_end == -1:
+            nxt_end = len(seg)
+        nxt_line = seg[nxt_start:nxt_end]
+        if PASPORT_RE.search(nxt_line) and not PASPORT_RE.search(after):
+            after += ' ' + nxt_line          # паспорт — на следующей строке
         pp, pasport_pos = '', len(after)
         pm = PASPORT_RE.search(after)
         if pm:
@@ -505,9 +1001,30 @@ def parse_f9(text):
         place = re.sub(r'\s+', ' ', after[:place_to]).strip(' ,;.')
         if re.search(r'регистрац|Год|Фамилия|постоянно|временно', place, re.IGNORECASE):
             place = ''
+        # в форме МГА после ФИО идёт графа «родственные отношения», а не место
+        # рождения («_ Мать», «Сын») — такое в «Место рождения» попадать не должно
+        if JUNK_PLACE_RE.search(place):
+            place = ''
+        # «26.11.1р86» — это дата рождения, но с испорченной цифрой (OCR);
+        # в «Место рождения» она попадать не должна
+        if re.search(r'\d{2}[.,]\d{2}[.,]\d', place):
+            place = ''
         # дата рождения — первая дата, НО если паспорт идёт раньше неё, это дата выдачи
         dates = [d[0].replace(',', '.') for d in DATE_RE.finditer(after)]
         dr = dates[0] if dates and (not pm or pm.start() > DATE_RE.search(after).start()) else ''
+        if not dr and not role_line:
+            # дата рождения может стоять на следующей строке (OCR разносит
+            # «Гр. ФИО … г.р.» по странице) — ищем её в окне строки: до
+            # следующей фамилии и до конца блока «основание» (там уже договоры)
+            stop = len(seg)
+            ms = BLOCK_STOP_RE.search(seg, e0)
+            if ms:
+                stop = ms.start()
+            nxt = spans[j + 1][0] if j + 1 < len(spans) else len(seg)
+            win = seg[e0:min(stop, nxt)]
+            md = DATE_RE.search(win)
+            if md and not PASPORT_RE.search(win[:md.start()]):
+                dr = md.group(1).replace(',', '.')
         if m.group(2):
             add(surname, m.group(2)[0] + m.group(3)[0], f'{surname} {m.group(2)} {m.group(3)}',
                 dr, place, pp, kem)
@@ -635,7 +1152,7 @@ def best_ls_match(blob, known):
     """Строка-блоб цифр угла страницы → (ЛС, точное?, оценка) среди известных ЛС.
 
     Сначала точное совпадение цифр; затем нечёткое (difflib) — OCR портит и цифры
-    (буквами), и теряет/добавляет разряды («Об Бо 9590» ← 0650099?90). Выбираем
+    (буквами), и теряет/добавляет разряды («Об Бо 1234» ← 0650099?90). Выбираем
     лучшего и принимаем его, только если он ОДНОЗНАЧНО лучше второго (зазор ≥ 0.06)
     и оценка ≥ 0.80 — иначе None: ошибочная привязка хуже непривязанной страницы.
 
@@ -831,6 +1348,29 @@ def match_page_ls(t, prs, known, known_persons, port_index=None):
 
 
 
+F9_OCR_VERSION = '3'   # меняем, когда улучшаем распознавание — кэш пересчитается
+
+
+def read_cached_pages(path):
+    """Прочитать сохранённое распознавание Ф-9 (output/f9-text/*.txt).
+
+    Формат файла: сначала отметки «=== страница N ===», затем текст
+    страниц, разделённых «=== конец страницы ===».
+    """
+    try:
+        raw = path.read_text(encoding='utf-8')
+    except OSError:
+        return []
+    if f'=== версия {F9_OCR_VERSION} ===' not in raw:
+        return []   # распознавание устарело — пересчитаем
+    heads = list(re.finditer(r'=== страница (\d+) ===', raw))
+    if not heads:
+        return []
+    nums = [int(h.group(1)) for h in heads]
+    bodies = [b.strip() for b in raw[heads[-1].end():].split('=== конец страницы ===')]
+    return [(n, b) for n, b in zip(nums, bodies) if b]
+
+
 def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_index=None):
     tmp = Path(tempfile.mkdtemp(prefix='f9ocr-'))
     out_dir = BASE / 'output' / 'f9-text'
@@ -848,18 +1388,32 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
             warn.append('Ф-9 индекс: ' + w)
     total_paths = len(paths)
     for pi, path in enumerate(paths, 1):
-        try:
-            pages = ocr_pdf(path, tmp)
-        except Exception as ex:  # noqa: BLE001
-            warn.append(f'Ф-9 «{path.name}»: не удалось распознать ({ex})')
-            continue
-        print(f'[{pi}/{total_paths}] {path.name}: распознано страниц: {len(pages)}', flush=True)
-        (out_dir / platform_utils.ascii_filename(path.stem + '.txt')).write_text(
-            '\n\n=== страница ' + ' ===\n\n=== '.join(
-                str(n) for n, t in pages) + ' ===\n' + '\n\n=== конец страницы ===\n\n'.join(
-                t for n, t in pages), encoding='utf-8')
+        cached = out_dir / platform_utils.ascii_filename(path.stem + '.txt')
+        pages = []
+        # распознавание не менялось, файл PDF не обновлялся — берём из кэша
+        if cached.exists() and cached.stat().st_mtime >= path.stat().st_mtime:
+            pages = read_cached_pages(cached)
+        if not pages:
+            try:
+                pages = ocr_pdf(path, tmp)
+            except Exception as ex:  # noqa: BLE001
+                warn.append(f'Ф-9 «{path.name}»: не удалось распознать ({ex})')
+                continue
+            print(f'[{pi}/{total_paths}] {path.name}: распознано страниц: {len(pages)}', flush=True)
+            cached.write_text(
+                f'=== версия {F9_OCR_VERSION} ===\n\n'
+                '\n\n=== страница ' + ' ===\n\n=== '.join(
+                    str(n) for n, t in pages) + ' ===\n' + '\n\n=== конец страницы ===\n\n'.join(
+                    t for n, t in pages), encoding='utf-8')
+        else:
+            print(f'[{pi}/{total_paths}] {path.name}: из сохранённого распознавания', flush=True)
         lm = re.search(r'ЛС\s*[:№]?\s*([0-9]{6,12})', path.stem, re.IGNORECASE)
         ls_name = lm.group(1) if lm else ''
+        if not ls_name:
+            # в имени файла сам лицевой счёт: «6202718.pdf», «6202757-2.pdf»
+            # (второй лист той же справки) — привязываем по нему
+            bm = re.fullmatch(r'([0-9]{6,12})(?:-\d+)?', path.stem)
+            ls_name = bm.group(1) if bm else ''
         if ls_name:  # ЛС в имени файла — все страницы к нему
             n_faces = 0
             for n, t in pages:
@@ -1070,30 +1624,93 @@ def sost_on(d2):
 
 
 def addr_full(raw):
-    """'Пример,Тестовая,д.55кв.164' → 'Примерная область, Примерный район, г. Пример, ул. Тестовая, д. 55, кв. 164'.
+    """'Пример,Тестовая,д.55кв.164' → 'Пример, ул. Тестовая, д. 55, кв. 164'.
 
-    Если адрес уже развёрнут (есть «д. N» и «кв. N» или упомянут регион) —
-    возвращаем как есть: разбирать заново нельзя, иначе «Примерная область,
-    Примерный район, г. Пример, ул. Тестовая, д. 1, кв. 1» склеится в мусор.
+    Область и район НЕ подставляются: в портянке их нет, а выдумывать
+    («Примерная область, Примерный район») нельзя — в документе адрес
+    берётся из справки Ф-9 (см. parse_f9_addr_parts).
     """
     raw = str(raw or '').strip()
     if not raw:
         return ''
-    if re.search(r'\bд[.\s№]*\d', raw, re.IGNORECASE) and \
-            re.search(r'\bкв[.\s№]*\d', raw, re.IGNORECASE):
-        return re.sub(r'\s+', ' ', raw)
-    parts = [p.strip() for p in raw.split(',') if p.strip()]
-    city, street, house = (parts + ['', '', ''])[:3]
-    hm = re.match(r'д[.№\s]*(\d+)(?:кв[.№\s]*(\d+))?$', house)
-    dom, kv = (hm.group(1), hm.group(2)) if hm else (house, '')
-    city_txt = city if re.search(r'\b(г|пгт|с|п|д)[.\s]', city) else f'г. {city}'
-    street_txt = street
-    if street and not re.search(r'(ул|пр|шоссе|ш[.\s]|пер|бул)', street, re.IGNORECASE):
-        street_txt = f'ул. {street}'
-    out = f'Примерная область, Примерный район, {city_txt}, {street_txt}, д. {dom}'
-    if kv:
-        out += f', кв. {kv}'
-    return re.sub(r'\s+', ' ', out)
+    parts = parse_addr_parts(raw)
+    return fmt_addr(parts)
+
+
+def fix_ul_from_portyanka(parts, port_addr):
+    """OCR путает буквы в названии улицы («НовосВлов» вместо «Тестовая»).
+
+    Название улицы в портянке — из того же адреса (тот же дом и квартира),
+    поэтому при близком совпадении берём написание портянки: в документ
+    не должно попасть «НовосВлов».
+    """
+    port = parse_addr_parts(port_addr)
+    if not parts.get('ul') or not port.get('ul'):
+        return parts, False
+    if parts.get('dom') and port.get('dom') and parts['dom'] != port['dom']:
+        return parts, False       # дома разные — улицы могут различаться
+    a, b = parts['ul'].lower(), port['ul'].lower()
+    if a == b:
+        return parts, False
+    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.75:
+        parts = dict(parts)
+        parts['ul'] = port['ul']
+        return parts, True
+    return parts, False
+
+
+def build_mo_index(f9_texts_norm):
+    """Кто владеет домом (МО) — по всем разобранным справкам.
+
+    Ключи: (населённый пункт, дом) и населённый пункт. Нужны, когда OCR
+    в справке не увидел строку «в доме принадлежащем: …» — тогда МО берём
+    из другой справки по тому же дому (дом один, владелец один).
+    """
+    by_dom, by_np = {}, {}
+    for items in (f9_texts_norm or {}).values():
+        for _fn, _pg, text, _graph, _how in (items or []):
+            p = parse_f9_addr_parts(text)
+            if not p['rayon']:
+                continue
+            np_key = re.sub(r'\s+', ' ', p['np'].lower()).strip(' .,')
+            by_dom.setdefault((np_key, p['dom']), p['rayon'])
+            by_np.setdefault(np_key, p['rayon'])
+    return by_dom, by_np
+
+
+def resolve_addr(group, f9_items, flags=None, mo_index=None):
+    """Адрес регистрации для заявления: из справки Ф-9, иначе из портянки.
+
+    Из справки берутся только те части адреса, что в ней видны:
+    область, район (МО), населённый пункт, улица, дом, корпус, квартира.
+    В flags добавляются пометки: 'нет_области', 'улица_из_портянки'.
+    """
+    port_addr = group.get('addr') or ''
+    for fname, page, text, graph, how in (f9_items or []):
+        parts = parse_f9_addr_parts(text)
+        if not (parts['dom'] or parts['ul'] or parts['np'] or parts['kv']):
+            continue
+        parts, fixed = fix_ul_from_portyanka(parts, port_addr)
+        if not parts['rayon'] and mo_index:
+            # OCR не увидел «в доме принадлежащем: …» — берём МО из другой
+            # справки по тому же дому (владелец у дома один)
+            by_dom, by_np = mo_index
+            np_key = re.sub(r'\s+', ' ', parts['np'].lower()).strip(' .,')
+            mo = by_dom.get((np_key, parts['dom'])) or by_np.get(np_key)
+            if mo:
+                parts = dict(parts)
+                parts['rayon'] = mo
+                if flags is not None:
+                    flags.add('мо_из_другой_справки')
+        addr = fmt_addr(parts)
+        if addr:
+            if flags is not None:
+                if fixed:
+                    flags.add('улица_из_портянки')
+                if not parts['oblast']:
+                    flags.add('нет_области')
+            return addr, f'Ф-9 «{fname}» стр. {page}'
+    return addr_full(port_addr), 'портянка'
 
 
 # ---------------------------------------------------------------- главный ----
@@ -1147,6 +1764,15 @@ def main():
     f9_by_ls, unattached, texts_by_ls = load_f9_files(
         f9_files, report, warn, known_ls={g['ls'] for g in groups},
         known_persons=known_persons, port_index=build_port_index(groups))
+    # тексты справок — по нормализованному ЛС (Excel теряет ведущие нули)
+    f9_texts_norm = {}
+    for ls_key, items in texts_by_ls.items():
+        f9_texts_norm.setdefault(norm_ls(ls_key), []).extend(items)
+    addr_stats = {}
+    addr_flags = set()
+    mo_index = build_mo_index(f9_texts_norm)
+    tenure_by_ls = {}     # ЛС → (категория по Ф-9, основание)
+    tenure_log = []       # строки отчёта по каждому заявлению
 
     # Импорт пересобирает книгу с нуля, ручные правки в ней пропадут:
     # заранее сохраняем копию с датой, чтобы всегда было что вернуть.
@@ -1198,44 +1824,104 @@ def main():
     for g in groups:
         n = ws_z.max_row
         ls = g['ls']
-        # категория: справочник → ручная правка прежней книги → реестры/бэкапы
-        # прошлых сборов → пусто
-        cat = (guide.get(ls, {}).get('Категория')
-               or prev.get((g['typ'], ls), {}).get('Категория')
-               or saved_cats.get(norm_ls(ls), ''))
-        sud = guide.get(ls, {}).get('Суд (шапка)') or prev.get((g['typ'], ls), {}).get('Суд (шапка)') or ''
+        f9_items = f9_texts_norm.get(norm_ls(g['ls'])) or []
+        # категория должника — из справки Ф-9: жилой ордер/договор найма →
+        # наниматель; договор купли-продажи, приватизация, передача в
+        # собственность → собственник. Форма документа под неё и подбирается.
+        surn = [fio_surname(p.get('surname') or p.get('full')) for p in g['persons']]
+        cat_f9, ev_f9 = detect_tenure_ls([t for _fn, _pg, t, _gr, _how in f9_items], surn)
+        # категория: справка Ф-9 → справочник → ручная правка прежней книги →
+        # реестры/бэкапы прошлых сборов → пусто
+        cat_manual = (guide.get(ls, {}).get('Категория')
+                      or prev.get((g['typ'], ls), {}).get('Категория')
+                      or saved_cats.get(norm_ls(ls), ''))
+        cat = cat_f9 or cat_manual
+        typ = g['typ']
+        if cat_f9:
+            want = 'СП' if cat_f9 == 'наниматель' else 'ИСК'
+            tenure_by_ls[norm_ls(ls)] = (cat_f9, ev_f9)
+            # запоминаем найденную категорию в справочнике — она переживёт
+            # следующий импорт и будет видна юристу для проверки
+            g_rec = guide.setdefault(ls, {})
+            g_rec['Категория'] = cat_f9
+            if not g_rec.get('Заметки'):
+                g_rec['Заметки'] = f'По справке Ф-9: {ev_f9}'
+            if cat_manual and cat_manual != cat_f9:
+                warn.append(f'ЛС {ls}: в «Справочнике ЛС» категория «{cat_manual}», а по справке Ф-9 — '
+                            f'«{cat_f9}» («{ev_f9}»): взято по справке Ф-9.')
+            if typ in ('СП', 'ИСК') and typ != want:
+                if want == 'ИСК':
+                    typ = 'ИСК'
+                    warn.append(f'ЛС {ls}: в портянке — судебный приказ, а по справке Ф-9 должник — '
+                                f'собственник («{ev_f9}»): собрано исковое заявление.')
+                else:
+                    warn.append(f'ЛС {ls}: в портянке — исковое заявление, а по справке Ф-9 должник — '
+                                f'наниматель («{ev_f9}»): оставлен иск, проверьте.')
+            elif not typ:
+                typ = want
+        if typ == 'СП' and (g['dolg'] or 0) + (g['peni'] or 0) > 500_000:
+            typ = 'ИСК'
+            warn.append(f'ЛС {ls}: долг с пеней больше 500 000 ₽ — судебный приказ невозможен '
+                        '(ст. 121 ГПК РФ), собрано исковое заявление.')
+        pv = prev.get((g['typ'], ls), {}) or prev.get((typ, ls), {})
+        sud = guide.get(ls, {}).get('Суд (шапка)') or pv.get('Суд (шапка)') or ''
         if not cat:
             warn.append(f'ЛС {ls}: не указана категория (наниматель/собственник) — впишите в лист '
                         '«Справочник ЛС», заявление без неё не соберётся.')
         if not sud:
-            sud = default_sud(g['typ'])
+            sud = default_sud(typ)
             if sud:
-                warn.append(f'ЛС {ls}: суд подставлен по типу документа ({g["typ"]}) — проверьте участок.')
+                warn.append(f'ЛС {ls}: суд подставлен по типу документа ({typ}) — проверьте участок.')
         housing = (guide.get(ls, {}).get('Тип жилья (текст)')
-                   or prev.get((g['typ'], ls), {}).get('Тип жилья (текст)') or '')
-        cena = prev.get((g['typ'], ls), {}).get('Цена иска, руб.') or ''
-        otmena = prev.get((g['typ'], ls), {}).get('Отмена СП (да/нет)') or 'нет'
-        ws_z.append([n, g['typ'], cat, ls, sud, addr_full(g['addr']), housing,
+                   or pv.get('Тип жилья (текст)') or '')
+        cena = pv.get('Цена иска, руб.') or ''
+        otmena = pv.get('Отмена СП (да/нет)') or 'нет'
+        # адрес — из справки Ф-9 (если она привязана к этому ЛС), иначе из портянки
+        addr, addr_src = resolve_addr(g, f9_items, addr_flags, mo_index)
+        addr_stats[addr_src.split(' ')[0]] = addr_stats.get(addr_src.split(' ')[0], 0) + 1
+        if addr_src == 'портянка':
+            addr_flags.add('без_ф9')
+        ws_z.append([n, typ, cat, ls, sud, addr, housing,
                      fmt_d(sost_on(g['d2'])), fmt_d(g['d1']), fmt_d(g['d2']), g['dolg'],
                      fmt_d(g['d1']), fmt_d(g['d2']), g['peni'], g['gp'], cena, otmena])
+        if cat_f9:
+            tenure_log.append(f'ЛС {ls}: {typ} — {cat_f9} (по справке Ф-9: «{ev_f9}»)')
         n_claim += 1
 
         f9 = f9_by_ls.get(g['ls'], [])
+        f9_texts = [t for _fn, _pg, t, _gr, _how in f9_items]
         rows = []
         clean = lambda s: re.sub(r'\s*\([^)]*\)', '', s).lower().split()[0]
         f9_keys = {(clean(q['fio']), q['init']) for q in f9}
         if f9:
-            # полные ФИО портянки достраивают инициалы из Ф-9
+            # одна справка может быть отсканирована несколькими страницами, и
+            # дата рождения на них распозналась по-разному (где-то прочитали
+            # дату регистрации) — берём ту, что встречается чаще
+            votes = {}
+            for q in f9:
+                if q['dr']:
+                    k = (re.sub(r'\s*\([^)]*\)', '', q['surname']).lower(), q['init'])
+                    votes.setdefault(k, {})[q['dr']] = votes.setdefault(k, {}).get(q['dr'], 0) + 1
+            best_dr = {k: max(v.items(), key=lambda kv: kv[1])[0] for k, v in votes.items()}
+            # полные ФИО портянки достраивают инициалы из Ф-9; и наоборот —
+            # написание портянки точнее, чем распознанное OCR (у отчества
+            # OCR часто «Файздрахманрвна» вместо «Файздрахмановна»)
             for p in f9:
                 nm = p['fio']
-                if not re.match(r'^[А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]', nm):
-                    full = next((c['full'] for c in g['persons']
-                                 if clean(c['surname']) == clean(nm) and
-                                 (c['init'] == p['init'] or c['init'] == '?')), None)
-                    if full:
-                        nm = full
+                cand = next((c['full'] for c in g['persons']
+                             if c['full'] and clean(c['surname']) == clean(nm) and
+                             (c['init'] == p['init'] or c['init'] == '?')), None)
+                if cand and cand != nm:
+                    nm = cand
                 pp = f'{p["pasport"]}, выдан {p["kem"]}' if p['pasport'] and p['kem'] else p['pasport']
-                rows.append([g['ls'], nm, p['dr'], p['place'], pp, ''])  # Пол — пусто
+                k = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
+                dr = best_dr.get(k, p['dr'])
+                if not dr:
+                    # дата не распозналась: ищем её рядом с «Имя Отчество»
+                    # (в таблице OCR теряет начало фамилии — «о НИКОВ Юрий
+                    # Анатольевич 01.05.1962»)
+                    dr = find_dr_by_name(f9_texts, nm)
+                rows.append([g['ls'], nm, dr, p['place'], pp, ''])  # Пол — пусто
                 n_person += 1
             for p in g['persons']:
                 key = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
@@ -1252,8 +1938,20 @@ def main():
             else:
                 warn.append(f'ЛС {g["ls"]}: В ПОРТЯНКЕ ПУСТАЯ КОЛОНКА «ФИО» — должников нет! '
                             'Добавьте их вручную на лист «Должники» (или это ЛС без жилого помещения?).')
-        for r in rows:
+        for r in merge_short_names(rows):
             ws_d.append(r)
+
+    # категория, определённая по справке Ф-9, попадает в «Справочник ЛС» —
+    # её видно юристу, и она остаётся запасным источником, если справка
+    # в следующий раз не распознается.
+    if tenure_by_ls and GUIDE_SHEET in wb.sheetnames:
+        ws_g = wb[GUIDE_SHEET]
+        if ws_g.max_row > 1:
+            ws_g.delete_rows(2, ws_g.max_row)
+        for ls in sorted(guide):
+            rec = guide[ls]
+            ws_g.append([ls, rec.get('Категория', ''), rec.get('Суд (шапка)', ''),
+                         rec.get('Тип жилья (текст)', ''), rec.get('Заметки', '')])
 
     if unattached:
         ws_un = wb['Ф-9 не привязаны'] if 'Ф-9 не привязаны' in wb.sheetnames else wb.create_sheet('Ф-9 не привязаны')
@@ -1321,12 +2019,14 @@ def main():
         heads_f = ['Лицевой счёт', 'Файл', 'Стр.',
                    'Текст справки Ф-9 (распознано автоматически — сверить с оригиналом)',
                    'Графа «собственник и/или наниматель» (через «;»; для СП/ИСК)',
-                   'Как привязано к лицевому счёту']
+                   'Как привязано к лицевому счёту',
+                   'Категория по справке Ф-9 (основание)']
         for j, h in enumerate(heads_f, 1):
             ws_f.cell(row=1, column=j, value=h)
         row_f = 1
         n_graph = 0
         for ls in sorted(texts_by_ls, key=str):
+            cat_ev = tenure_by_ls.get(norm_ls(ls), ('', ''))
             for fname, n, t, graph, how in texts_by_ls[ls]:
                 row_f += 1
                 ws_f.cell(row=row_f, column=1, value=ls)
@@ -1341,16 +2041,56 @@ def main():
                     n_graph += 1
                 if how:
                     ws_f.cell(row=row_f, column=6, value=how)
+                if cat_ev[0]:
+                    ws_f.cell(row=row_f, column=7,
+                              value=f'{cat_ev[0]} — «{cat_ev[1]}»')
         for c in ws_f[1]:
             c.font, c.fill = openpyxl.styles.Font(bold=True), \
                 openpyxl.styles.PatternFill('solid', fgColor='DDEBF7')
-        for i, wdt in enumerate((14, 26, 6, 110, 40, 34), 1):
+        for i, wdt in enumerate((14, 26, 6, 110, 40, 34, 44), 1):
             ws_f.column_dimensions[openpyxl.utils.get_column_letter(i)].width = wdt
         if n_graph:
             report.append(f'Графа «собственник/наниматель» распознана на {n_graph} справк(ах) — '
                           'по ней: СП отдельно на каждое лицо, в иcк — собственник + совершеннолетние.')
         report.append(f'Справок Ф-9 привязано: {sum(len(v) for v in texts_by_ls.values())} '
                       f'по {len(texts_by_ls)} ЛС (лист «Ф-9 справки»)')
+
+    if addr_stats:
+        n_f9 = addr_stats.get('Ф-9', 0)
+        n_port = addr_stats.get('портянка', 0)
+        report.append(f'Адрес регистрации: из справки Ф-9 — {n_f9}, из портянки — {n_port}. '
+                      'В адрес попадают только те части, что есть в справке Ф-9: область, '
+                      'район (МО), населённый пункт, улица, дом, корпус, квартира.')
+        if 'нет_области' in addr_flags:
+            warn.append('В части справок Ф-9 нет области — в адрес она не добавлена '
+                        '(в адресе только то, что видно в справке). Если область нужна '
+                        'в документе — впишите её вручную в лист «Заявления».')
+        if 'улица_из_портянки' in addr_flags:
+            warn.append('Название улицы в части справок Ф-9 распозналось с ошибкой OCR — '
+                        'взято написание из портянки (тот же дом и квартира).')
+        if 'мо_из_другой_справки' in addr_flags:
+            warn.append('В части справок Ф-9 OCR не разобрал строку «в доме принадлежащем: …» — '
+                        'владелец дома (МО) взят из другой справки по тому же дому.')
+        if 'без_ф9' in addr_flags:
+            warn.append('Для части заявлений нет привязанной Ф-9 — адрес взят из портянки; '
+                        'область и район в портянке не указываются.')
+
+    # ---- категория должника по справкам Ф-9: форма документа (СП/иск) ----
+    if tenure_log:
+        n_rent = sum(1 for t in tenure_log if 'наниматель' in t)
+        n_own = sum(1 for t in tenure_log if 'собственник' in t)
+        report.append('')
+        report.append('КАТЕГОРИЯ ДОЛЖНИКА ПО СПРАВКЕ Ф-9 (основание — форма документа):')
+        report.append(f'  нанимателей: {n_rent} (судебный приказ), собственников: {n_own} '
+                      '(исковое заявление)')
+        for line in tenure_log:
+            report.append('  ' + line)
+        undefined = [str(g['ls']) for g in groups
+                     if norm_ls(g['ls']) not in tenure_by_ls]
+        if undefined:
+            warn.append('Не удалось определить категорию (наниматель/собственник) по справкам Ф-9 '
+                        'для ЛС: ' + ', '.join(undefined) + ' — основание в справке неразборчиво; '
+                        'укажите категорию вручную в листе «Справочник ЛС».')
 
     # справки, привязанные к ЛС, которых нет в портянке, в документы не попадут — сообщаем
     orphan_ls = sorted((ls for ls in f9_by_ls
@@ -1363,10 +2103,20 @@ def main():
     if ws_s.max_row > 1:   # лист перезаписывается целиком — иначе копятся дубли заголовков
         ws_s.delete_rows(1, ws_s.max_row)
     ws_s.append(['НУЖНО ЗАПОЛНИТЬ РУКАМИ:'])
-    ws_s.append(['• Категория (наниматель/собственник) — вписывается один раз в лист «Справочник ЛС»,'])
-    ws_s.append(['  оттуда подставляется при каждом импорте (в портянке и в Ф-9 её нет).'])
+    ws_s.append(['• Категория (наниматель/собственник) — определяется по справке Ф-9 (жилой ордер, '
+                 'договор найма → наниматель; договор купли-продажи, приватизация, передача '
+                 'в собственность → собственник).'])
+    ws_s.append(['  Если основание в справке неразборчиво — впишите категорию в лист «Справочник ЛС», '
+                 'оттуда подставляется при каждом импорте.'])
     ws_s.append(['• Суд (шапка) — подставляется по типу документа; свой указывается в «Справочник ЛС».'])
     ws_s.append(['• Справки Ф-9, не привязанные к ЛС, — лист «Ф-9 не привязаны» (с причиной).'])
+    ws_s.append([])
+    ws_s.append(['КАТЕГОРИЯ ПО СПРАВКЕ Ф-9 (определяет форму документа: наниматель — судебный приказ, '
+                 'собственник — исковое заявление):'])
+    for line in tenure_log:
+        ws_s.append(['• ' + line])
+    if not tenure_log:
+        ws_s.append(['• не определена'])
     ws_s.append([])
     ws_s.append(['ПРЕДУПРЕЖДЕНИЯ СВЕРКИ:'])
     for w in sorted(set(warn)):
