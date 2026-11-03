@@ -736,8 +736,18 @@ def add_par(doc, text, align='justify', indent=True, bold=False):
     return p
 
 
+# в настройках взыскатель иногда забит как «Истец: ООО …» — приставку убираем,
+# чтобы в тексте не было «Взыскатель: Истец: …» и «Представитель Истец: …»
+ROLE_LABEL_RE = re.compile(r'^\s*(?:Истец|Истца|Взыскатель|Взыскателя)\s*:\s*', re.IGNORECASE)
+
+
+def vz_name(vz):
+    """Наименование взыскателя без приставки «Истец:»."""
+    return ROLE_LABEL_RE.sub('', str(vz or '')).strip()
+
+
 def build_docx(c, cfg, out_path):
-    vz = cfg.get('взыскатель_наименование', 'ООО «Рога и Копыта»')
+    vz = vz_name(cfg.get('взыскатель_наименование', 'ООО «Рога и Копыта»'))
     doc = Document()
     st = doc.styles['Normal']
     st.font.name = 'Times New Roman'
@@ -816,7 +826,7 @@ def build_docx(c, cfg, out_path):
         p.add_run(f'{i}. {item}')
 
     add_par(doc, '', 'center', indent=False)
-    add_par(doc, f'Представитель {vz}', 'left', indent=False)
+    add_par(doc, f'Представитель Истца: {vz}' if vz else 'Представитель Истца', 'left', indent=False)
     add_par(doc, f'по доверенности № {cfg.get("доверенность_номер", "0001")} от '
                  f'{cfg.get("доверенность_дата", "09.01.2025")} года '
                  f'_________________ {cfg.get("представитель", "")}', 'left', indent=False)
