@@ -655,6 +655,8 @@ SOLID = (
 ST309 = ('Статьей 309 Гражданского кодекса РФ установлено, что обязательства должны исполняться '
          'надлежащим образом в соответствии с условиями обязательства и требованиями закона.')
 
+FORM_WORD = {'СП': 'судебный приказ', 'ИСК': 'иск'}
+
 RUKOVODSTVO = {
     ('СП', 'наниматель'): 'Руководствуясь ст.ст. 309, 330, 678, 682 ГК РФ, ст.ст. 67, 153, 155 ЖК РФ, ст.ст. 121, 122, 131, 132 ГПК РФ',
     ('СП', 'собственник'): 'Руководствуясь ст.ст. 309, 330, 540, 548 ГК РФ, ст.ст. 30, 31, 153, 154, 155 ЖК РФ, ст.ст. 121, 122, 131, 132 ГПК РФ',
@@ -801,6 +803,15 @@ def build_docx(c, cfg, out_path):
     cena = c['dolg'] + c['peni']
     add_par(doc, f'Цена иска: {fmt_price(cena)}', 'right', indent=False)
     add_par(doc, f'Государственная пошлина: {fmt_price(c["poshlina"])}', 'right', indent=False)
+
+    # --- паспорт документа: форма, статус ответчиков, Фамилия И.О., адрес, ЛС ---
+    add_par(doc, '', 'right', indent=False)
+    shorts = ', '.join(fio_nom_short(p['fio']) for p in c['persons'])
+    add_par(doc, f'Форма документа: {FORM_WORD[c["typ"]]}', 'right', indent=False)
+    add_par(doc, f'Статус ответчиков: {c["cat"]}', 'right', indent=False)
+    add_par(doc, f'Ответчики (Фамилия И.О.): {shorts}', 'right', indent=False)
+    add_par(doc, f'Адрес: {c["addr"]}', 'right', indent=False)
+    add_par(doc, f'Лицевой счёт: {c["ls"]}', 'right', indent=False)
     add_par(doc, '', 'center', indent=False)
 
     title = 'ЗАЯВЛЕНИЕ О ВЫДАЧЕ СУДЕБНОГО ПРИКАЗА' if c['typ'] == 'СП' else 'ИСКОВОЕ ЗАЯВЛЕНИЕ'
@@ -901,15 +912,15 @@ def main():
         print(f'[{di}/{len(docs)}] собираю документ № {c["num"]}…', flush=True)
         try:
             shorts = fio_nom_short(c['persons'][0]['fio'])
-            fname = f'{c["num"]} {c["typ"]} {c["cat"]} {shorts} ЛС {c["ls"]}'
+            fname = f'{c["num"]} {FORM_WORD[c["typ"]]} {c["cat"]} {shorts} ЛС {c["ls"]}'
             if c.get('parts', 1) > 1:
-                fname += f' ({c["part"]} из {c["parts"]})'
+                fname += f' часть {c["part"]} из {c["parts"]}'
             fname += '.docx'
-            fname = platform_utils.ascii_filename(fname)
+            fname = platform_utils.safe_filename(fname)
             build_docx(c, cfg, out_dir / fname)
             print(f'[{di}/{len(docs)}] собрано: {fname}', flush=True)
-            rows.append([c['num'], fname, c['typ'], c['cat'], c['ls'],
-                         '; '.join(p['fio'] for p in c['persons']), c['addr'],
+            rows.append([c['num'], fname, FORM_WORD[c['typ']], c['cat'], c['ls'],
+                         '; '.join(fio_nom_short(p['fio']) for p in c['persons']), c['addr'],
                          fmt_date(c['d1']), fmt_date(c['d2']), c['dolg'],
                          fmt_date(c['p1']), fmt_date(c['p2']), c['peni'],
                          c['dolg'] + c['peni'], c['poshlina'],
@@ -925,7 +936,8 @@ def main():
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Реестр'
-    heads = ['№', 'Файл', 'Тип', 'Категория', 'Лицевой счёт', 'Должники', 'Адрес',
+    heads = ['№', 'Файл', 'Форма документа', 'Статус ответчиков', 'Лицевой счёт',
+             'Ответчики (Фамилия И.О.)', 'Адрес',
              'Долг: с', 'Долг: по', 'Долг, руб.', 'Пени: с', 'Пени: по', 'Пени, руб.',
              'Цена иска, руб.', 'Госпошлина, руб.', 'Суд']
     ws.append(heads)

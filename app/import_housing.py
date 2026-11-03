@@ -1394,8 +1394,21 @@ def read_cached_pages(path):
     return [(n, b) for n, b in zip(nums, bodies) if b]
 
 
+def _f9_page_key(path):
+    """Порядок файлов Ф-9: страницы одной справки — по номеру («6200001.pdf»,
+    «6200001-2.pdf», …), остальные — по имени. Порядок не должен влиять на
+    порядок лиц в справке, иначе от запуска к запуску меняются и шапка
+    документа, и имя файла."""
+    stem = Path(path).stem
+    m = re.fullmatch(r'(\d+)(?:-(\d+))?', stem)
+    if m:
+        return (m.group(1), int(m.group(2) or 0), stem)
+    return (stem, 0, stem)
+
+
 def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_index=None):
     tmp = Path(tempfile.mkdtemp(prefix='f9ocr-'))
+    paths = sorted(paths, key=_f9_page_key)
     out_dir = BASE / 'output' / 'f9-text'
     out_dir.mkdir(parents=True, exist_ok=True)
     by_ls, unattached, texts_by_ls = {}, [], {}
@@ -1433,7 +1446,7 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
         lm = re.search(r'ЛС\s*[:№]?\s*([0-9]{6,12})', path.stem, re.IGNORECASE)
         ls_name = lm.group(1) if lm else ''
         if not ls_name:
-            # в имени файла сам лицевой счёт: «6200001.pdf», «6200002-2.pdf»
+            # в имени файла сам лицевой счёт: «6200002.pdf», «6200003-2.pdf»
             # (второй лист той же справки) — привязываем по нему
             bm = re.fullmatch(r'([0-9]{6,12})(?:-\d+)?', path.stem)
             ls_name = bm.group(1) if bm else ''
@@ -1980,6 +1993,9 @@ def main():
             else:
                 warn.append(f'ЛС {g["ls"]}: В ПОРТЯНКЕ ПУСТАЯ КОЛОНКА «ФИО» — должников нет! '
                             'Добавьте их вручную на лист «Должники» (или это ЛС без жилого помещения?).')
+        # порядок должников — как в справке Ф-9 (страницы по номерам); он
+        # одинаков от запуска к запуску, поэтому не меняются ни шапка
+        # документа, ни имя файла
         for r in merge_short_names(rows):
             ws_d.append(r)
 
