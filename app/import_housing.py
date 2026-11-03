@@ -1598,12 +1598,87 @@ DEFAULT_SUD = {
     'СП': 'Мировому судье судебного участка № 75 / Примерного района Примерной области',
     'ИСК': 'В Примерный городской суд / Примерного района Примерной области',
 }
+# условный (демонстрационный) суд: в реальную подачу он попадать не должен —
+# из таблицы он не берётся, а подставляется только как последний запасной вариант
+PLACEHOLDER_SUD = {v.strip().lower() for v in DEFAULT_SUD.values()}
 # поля, которые переносим из прежней книги при пересборке
 KEEP_COLS = ('Категория', 'Суд (шапка)', 'Тип жилья (текст)', 'Цена иска, руб.', 'Отмена СП (да/нет)')
 
 
 def default_sud(typ):
     return DEFAULT_SUD.get(str(typ or '').strip().upper(), '')
+
+
+def is_placeholder_sud(value):
+    """Условный демонстрационный суд («Примерного района Примерной области»)."""
+    return str(value or '').strip().lower() in PLACEHOLDER_SUD
+
+
+def real_sud(value):
+    """Суд из таблицы; условный «примерный» отбрасывается — он нам не подходит."""
+    v = str(value or '').strip()
+    return '' if is_placeholder_sud(v) else v
+
+
+def read_settings(wb):
+    """Лист «Настройки» → {параметр: значение}."""
+    out = {}
+    if not wb or 'Настройки' not in wb.sheetnames:
+        return out
+    for row in wb['Настройки'].iter_rows(min_row=2, values_only=True):
+        if row and row[0] is not None and str(row[0]).strip():
+            val = row[1] if len(row) > 1 else None
+            out[str(row[0]).strip()] = '' if val is None else str(val).strip()
+    return out
+
+
+def most_common_sud(*sources):
+    """Самый частый суд среди известных значений (условные «примерные» не считаются).
+
+    Так суд подачи переходит из строки в строку: один раз указали — дальше
+    подставляется тот же участок, а не выдуманный."""
+    count = {}
+    for src in sources:
+        for v in (src or {}).values():
+            s = real_sud(v)
+            if s:
+                count[s] = count.get(s, 0) + 1
+    if not count:
+        return ''
+    return max(count.items(), key=lambda kv: kv[1])[0]
+
+
+def copy_settings(prior_wb, wb):
+    """Настройки юриста (взыскатель, реквизиты, суд) переживают пересборку книги.
+
+    В новой книге создаются демо-значения — без этого переноса они затирали бы
+    то, что юрист ввёл вручную (инцидент 03.11.2026: взыскатель и участок суда
+    возвращались к «Примерным» после каждого импорта)."""
+    if not prior_wb or 'Настройки' not in prior_wb.sheetnames:
+        return
+    if 'Настройки' not in wb.sheetnames:
+        return
+    ws_old, ws_new = prior_wb['Настройки'], wb['Настройки']
+    heads = [str(c.value).strip() if c.value else '' for c in ws_new[1]]
+    if 'Параметр' not in heads or 'Значение' not in heads:
+        return
+    i_p, i_v = heads.index('Параметр'), heads.index('Значение')
+    row_of = {}
+    for r in ws_new.iter_rows(min_row=2, max_col=i_p):
+        if r[i_p].value is not None:
+            row_of.setdefault(str(r[i_p].value).strip(), r)
+    for row in ws_old.iter_rows(min_row=2, values_only=True):
+        if not row or i_p >= len(row) or row[i_p] is None:
+            continue
+        param = str(row[i_p]).strip()
+        val = row[i_v] if i_v < len(row) else None
+        if not param or val is None or str(val).strip() == '':
+            continue
+        r = row_of.get(param)
+        if r is None:
+            ws_new.append([param, val])
+            continue
+        r[i_v].value = val
 
 
 def read_guide(wb):
@@ -1904,6 +1979,10 @@ def main():
         wb = kmod.build_book(include_tests=False)
         if 'Инструкция' in wb.sheetnames:
             wb['Инструкция']['A1'].value = 'КНИГА ВВОДА (сформирована импортом из «Портянки» и Ф-9)'
+        # настройки юриста (взыскатель, реквизиты, суд) переживают пересборку:
+        # демо-значения из новой книги молча затирали бы введённые вручную
+        if prior_wb:
+            copy_settings(prior_wb, wb)
     ws_z, ws_d = wb['Заявления'], wb['Должники']
     n_claim, n_person = 0, 0
     minors = []          # несовершеннолетние из справок Ф-9 (в документ не идут)
@@ -1929,6 +2008,21 @@ def main():
             rec = guide[ls]
             ws_g.append([ls, rec.get('Категория', ''), rec.get('Суд (шапка)', ''),
                          rec.get('Тип жилья (текст)', ''), rec.get('Заметки', '')])
+
+    # Суд подачи. Приоритет: «Справочник ЛС» (по этому лицевому счёту) →
+    # прежняя книга → настройка «суд (шапка)» → самый частый известный суд.
+    # Условный «примерный» суд из таблицы не берётся — в реальную подачу он
+    # попадать не должен (инцидент 03.11.2026: 26 документов ушли в участок № 75).
+    settings = read_settings(prior_wb) if prior_wb else {}
+    sud_setting = real_sud(settings.get('суд (шапка)'))
+    sud_common = most_common_sud(
+        {ls: rec.get('Суд (шапка)') for ls, rec in guide.items()},
+        {f'{t}|{ls}': rec.get('Суд (шапка)') for (t, ls), rec in prev.items()},
+    )
+    if sud_setting:
+        report.append(f'Суд подачи (из настроек «суд (шапка)»): {sud_setting}')
+    elif sud_common:
+        report.append(f'Суд подачи (самый частый в таблице): {sud_common}')
 
     for g in groups:
         n = ws_z.max_row
@@ -1987,14 +2081,19 @@ def main():
             if cat_manual and cat_manual != cat_f9:
                 warn.append(f'ЛС {ls}: в «Справочнике ЛС» категория «{cat_manual}», а по справке Ф-9 — '
                             f'«{cat_f9}» («{ev_f9}»): взято по справке Ф-9.')
-        sud = guide.get(ls, {}).get('Суд (шапка)') or pv.get('Суд (шапка)') or ''
+        sud = (real_sud(guide.get(ls, {}).get('Суд (шапка)'))
+               or real_sud(pv.get('Суд (шапка)')))
+        if not sud:
+            sud = sud_setting or sud_common
         if not cat:
             warn.append(f'ЛС {ls}: не указана категория (наниматель/собственник) — впишите в лист '
                         '«Справочник ЛС», заявление без неё не соберётся.')
         if not sud:
             sud = default_sud(typ)
             if sud:
-                warn.append(f'ЛС {ls}: суд подставлен по типу документа ({typ}) — проверьте участок.')
+                warn.append(f'ЛС {ls}: суд НЕ НАЙДЕН в таблице («Справочник ЛС», прежняя книга, '
+                            f'настройка «суд (шапка)») — подставлен условный суд по типу документа '
+                            f'({typ}). Проверьте участок!')
         housing = (guide.get(ls, {}).get('Тип жилья (текст)')
                    or pv.get('Тип жилья (текст)') or '')
         cena = pv.get('Цена иска, руб.') or ''
@@ -2240,7 +2339,9 @@ def main():
                  'в собственность → собственник).'])
     ws_s.append(['  Если основание в справке неразборчиво — впишите категорию в лист «Справочник ЛС», '
                  'оттуда подставляется при каждом импорте.'])
-    ws_s.append(['• Суд (шапка) — подставляется по типу документа; свой указывается в «Справочник ЛС».'])
+    ws_s.append(['• Суд (шапка) — берётся из «Справочника ЛС» (по лицевому счёту), иначе из прежней '
+                 'книги, иначе из настройки «суд (шапка)». Впишите суд подачи один раз — он '
+                 'подставится во все заявления.'])
     ws_s.append(['• Справки Ф-9, не привязанные к ЛС, — лист «Ф-9 не привязаны» (с причиной).'])
     ws_s.append([])
     ws_s.append(['КАТЕГОРИЯ ПО СПРАВКЕ Ф-9 (определяет правовое основание документа; форму документа '
