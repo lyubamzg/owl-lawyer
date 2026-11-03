@@ -764,6 +764,50 @@ def vz_name(vz):
     return ROLE_LABEL_RE.sub('', str(vz or '')).strip()
 
 
+def strip_label(value, labels=()):
+    """Чистит значение настройки: убирает табуляции/переводы строк и уже готовую подпись.
+
+    В настройках часто забивают «Юр.адрес: 187000, …» или «Тел. 8-…» — если подпись
+    уже есть, код не должен дописывать её второй раз."""
+    v = re.sub(r'\s+', ' ', str(value or '')).strip()
+    for lab in labels:
+        if v.lower().startswith(lab.lower()):
+            v = v[len(lab):].lstrip(' :.,-')
+            break
+    return v
+
+
+def bank_lines(cfg):
+    """Строки банковских реквизитов без задвоенных подписей.
+
+    Значения в настройках бывают двух видов: голые («407028…») и с подписью
+    («р/с 407028… к/с 301018…», «БИК 044030861 ИНН … КПП …»). Возвращает готовые
+    строки шапки — без дублей и без лишних пустых."""
+    out = []
+    bank = strip_label(cfg.get('банк'))
+    if bank:
+        out.append(bank)
+    rs = strip_label(cfg.get('р_с'), ('р/с', 'р\\с'))
+    ks = strip_label(cfg.get('к_с'), ('к/с', 'к\\с'))
+    ids = ''
+    if ks.lower().startswith('бик'):
+        ids, ks = ks, ''
+    if rs and ks:
+        out.append(f'р/с {rs} к/с {ks}')
+    elif rs:
+        out.append(f'р/с {rs}')
+    elif ks:
+        out.append(f'к/с {ks}')
+    if not ids:
+        bik, inn, kpp = (strip_label(cfg.get(k)) for k in ('бик', 'инн', 'кпп'))
+        parts = [f'БИК {bik}' if bik else '', f'ИНН {inn}' if inn else '',
+                 f'КПП {kpp}' if kpp else '']
+        ids = ' '.join(p for p in parts if p)
+    if ids:
+        out.append(ids)
+    return out
+
+
 def build_docx(c, cfg, out_path):
     vz = vz_name(cfg.get('взыскатель_наименование', 'ООО «Рога и Копыта»'))
     doc = Document()
@@ -783,15 +827,14 @@ def build_docx(c, cfg, out_path):
     head_word = 'Взыскатель' if c['typ'] == 'СП' else 'Истец'
     add_par(doc, f'{head_word}: {vz}', 'right', indent=False)
     for key, label in ((('юр_адрес'), 'Юр.адрес'), (('почт_адрес'), 'Почт.адрес')):
-        if cfg.get(key):
-            add_par(doc, f'{label}: {cfg[key]}', 'right', indent=False)
-    if cfg.get('телефон'):
-        add_par(doc, f'Тел. {cfg["телефон"]}', 'right', indent=False)
-    if cfg.get('банк'):
-        add_par(doc, cfg['банк'], 'right', indent=False)
-        add_par(doc, f'р/с {cfg.get("р_с", "")} к/с {cfg.get("к_с", "")}', 'right', indent=False)
-        add_par(doc, f'БИК {cfg.get("бик", "")} ИНН {cfg.get("инн", "")} КПП {cfg.get("кпп", "")}',
-                'right', indent=False)
+        val = strip_label(cfg.get(key), (label,))
+        if val:
+            add_par(doc, f'{label}: {val}', 'right', indent=False)
+    tel = strip_label(cfg.get('телефон'), ('Тел.', 'Тел'))
+    if tel:
+        add_par(doc, f'Тел. {tel}', 'right', indent=False)
+    for line in bank_lines(cfg):
+        add_par(doc, line, 'right', indent=False)
 
     label = 'Должник:' if c['typ'] == 'СП' else 'Ответчик(и):'
     lines = [f'{label} {person_line(c["persons"][0])}'] + \
@@ -804,14 +847,6 @@ def build_docx(c, cfg, out_path):
     add_par(doc, f'Цена иска: {fmt_price(cena)}', 'right', indent=False)
     add_par(doc, f'Государственная пошлина: {fmt_price(c["poshlina"])}', 'right', indent=False)
 
-    # --- паспорт документа: форма, статус ответчиков, Фамилия И.О., адрес, ЛС ---
-    add_par(doc, '', 'right', indent=False)
-    shorts = ', '.join(fio_nom_short(p['fio']) for p in c['persons'])
-    add_par(doc, f'Форма документа: {FORM_WORD[c["typ"]]}', 'right', indent=False)
-    add_par(doc, f'Статус ответчиков: {c["cat"]}', 'right', indent=False)
-    add_par(doc, f'Ответчики (Фамилия И.О.): {shorts}', 'right', indent=False)
-    add_par(doc, f'Адрес: {c["addr"]}', 'right', indent=False)
-    add_par(doc, f'Лицевой счёт: {c["ls"]}', 'right', indent=False)
     add_par(doc, '', 'center', indent=False)
 
     title = 'ЗАЯВЛЕНИЕ О ВЫДАЧЕ СУДЕБНОГО ПРИКАЗА' if c['typ'] == 'СП' else 'ИСКОВОЕ ЗАЯВЛЕНИЕ'
