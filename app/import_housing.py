@@ -191,10 +191,10 @@ def load_portyanka(path):
         if not ls:
             warn.append(f'строка {i}: нет лицевого счёта — строка пропущена')
             continue
-        if 'приказ' in typ_raw.lower():
-            typ = 'СП'
-        elif 'иск' in typ_raw.lower():
+        if 'иск' in typ_raw.lower():
             typ = 'ИСК'
+        elif 'приказ' in typ_raw.lower():
+            typ = 'СП'
         else:
             warn.append(f'строка {i} (ЛС {ls}): неизвестный тип «{typ_raw}»')
             typ = ''
@@ -226,7 +226,7 @@ def load_portyanka(path):
         persons, minors = fio_candidates(val('ФИО'))
         if not persons:
             warn.append(f'строка {i} (ЛС {ls}): из поля «{val("ФИО")}» не извлечено ни одного ФИО')
-        items.append({'row': i, 'typ': typ, 'ls': ls, 'persons': persons,
+        items.append({'row': i, 'typ': typ, 'typ_raw': typ_raw, 'ls': ls, 'persons': persons,
                       'minors_text': minors, 'addr': addr, 'd1': d1, 'd2': d2,
                       'dolg': dolg, 'peni': peni, 'gp': gp})
     return items, warn
@@ -290,7 +290,7 @@ def collect_groups(items, warn):
                         f'({", ".join(str(x) for x in sorted(base_dolg))}) — проверьте!')
         d2_all = {r['d2'] for r in rows if r['d2'] is not None}
         minors_all = [r['minors_text'] for r in rows if r['minors_text']]
-        out.append({'typ': typ, 'ls': ls, 'persons': merged,
+        out.append({'typ': typ, 'typ_raw': base.get('typ_raw', ''), 'ls': ls, 'persons': merged,
                     'minors_text': '; '.join(minors_all),
                     'addr': base['addr'], 'd1': base['d1'],
                     'd2': base['d2'], 'dolg': sorted(base_dolg)[0] if base_dolg else None,
@@ -1851,18 +1851,47 @@ def main():
         f9_items = f9_texts_norm.get(norm_ls(g['ls'])) or []
         # категория должника — из справки Ф-9: жилой ордер/договор найма →
         # наниматель; договор купли-продажи, приватизация, передача в
-        # собственность → собственник. Форма документа под неё и подбирается.
+        # собственность → собственник. Категория задаёт правовое основание
+        # документа; форма (СП или иск) — по сумме долга и отмене приказа.
         surn = [fio_surname(p.get('surname') or p.get('full')) for p in g['persons']]
         cat_f9, ev_f9 = detect_tenure_ls([t for _fn, _pg, t, _gr, _how in f9_items], surn)
+        # прежняя запись по этому ЛС (любого типа): из неё берутся ручные
+        # правки юриста — суд, тип жилья, цена иска, отмена СП
+        pv = (prev.get((g['typ'], ls), {})
+              or prev.get(('СП', ls), {})
+              or prev.get(('ИСК', ls), {}))
         # категория: справка Ф-9 → справочник → ручная правка прежней книги →
         # реестры/бэкапы прошлых сборов → пусто
         cat_manual = (guide.get(ls, {}).get('Категория')
-                      or prev.get((g['typ'], ls), {}).get('Категория')
+                      or pv.get('Категория')
                       or saved_cats.get(norm_ls(ls), ''))
         cat = cat_f9 or cat_manual
-        typ = g['typ']
+        # ФОРМА ДОКУМЕНТА. По умолчанию — судебный приказ. Исковое заявление
+        # собирается только когда:
+        #   • долг с пеней больше 500 000 ₽ (ст. 121 ГПК РФ — приказ невозможен);
+        #   • судебный приказ отменён («Отмена СП» = да);
+        #   • в портянке прямо указан иск.
+        # Категория (наниматель/собственник) из Ф-9 задаёт ПРАВОВОЕ ОСНОВАНИЕ
+        # документа, а не его форму.
+        total = (g['dolg'] or 0) + (g['peni'] or 0)
+        otmena = str(pv.get('Отмена СП (да/нет)') or 'нет').strip() or 'нет'
+        otmena_flag = otmena.lower().startswith('да')
+        typ = g['typ'] if g['typ'] in ('СП', 'ИСК') else 'СП'
+        if not g['typ']:
+            warn.append(f'ЛС {ls}: в портянке не указан тип документа — собран судебный приказ.')
+        if total > 500_000:
+            if typ != 'ИСК':
+                warn.append(f'ЛС {ls}: долг с пеней больше 500 000 ₽ — судебный приказ невозможен '
+                            '(ст. 121 ГПК РФ), собрано исковое заявление.')
+            typ = 'ИСК'
+        elif otmena_flag:
+            if typ != 'ИСК':
+                warn.append(f'ЛС {ls}: судебный приказ отменён — подаём исковое заявление.')
+            typ = 'ИСК'
+        elif typ == 'ИСК':
+            warn.append(f'ЛС {ls}: в портянке указано «{g.get("typ_raw") or "исковое заявление"}», '
+                        'но долг с пеней не превышает 500 000 ₽ и отмена СП не отмечена — проверьте.')
         if cat_f9:
-            want = 'СП' if cat_f9 == 'наниматель' else 'ИСК'
             tenure_by_ls[norm_ls(ls)] = (cat_f9, ev_f9)
             # запоминаем найденную категорию в справочнике — она переживёт
             # следующий импорт и будет видна юристу для проверки
@@ -1873,21 +1902,6 @@ def main():
             if cat_manual and cat_manual != cat_f9:
                 warn.append(f'ЛС {ls}: в «Справочнике ЛС» категория «{cat_manual}», а по справке Ф-9 — '
                             f'«{cat_f9}» («{ev_f9}»): взято по справке Ф-9.')
-            if typ in ('СП', 'ИСК') and typ != want:
-                if want == 'ИСК':
-                    typ = 'ИСК'
-                    warn.append(f'ЛС {ls}: в портянке — судебный приказ, а по справке Ф-9 должник — '
-                                f'собственник («{ev_f9}»): собрано исковое заявление.')
-                else:
-                    warn.append(f'ЛС {ls}: в портянке — исковое заявление, а по справке Ф-9 должник — '
-                                f'наниматель («{ev_f9}»): оставлен иск, проверьте.')
-            elif not typ:
-                typ = want
-        if typ == 'СП' and (g['dolg'] or 0) + (g['peni'] or 0) > 500_000:
-            typ = 'ИСК'
-            warn.append(f'ЛС {ls}: долг с пеней больше 500 000 ₽ — судебный приказ невозможен '
-                        '(ст. 121 ГПК РФ), собрано исковое заявление.')
-        pv = prev.get((g['typ'], ls), {}) or prev.get((typ, ls), {})
         sud = guide.get(ls, {}).get('Суд (шапка)') or pv.get('Суд (шапка)') or ''
         if not cat:
             warn.append(f'ЛС {ls}: не указана категория (наниматель/собственник) — впишите в лист '
@@ -1899,7 +1913,6 @@ def main():
         housing = (guide.get(ls, {}).get('Тип жилья (текст)')
                    or pv.get('Тип жилья (текст)') or '')
         cena = pv.get('Цена иска, руб.') or ''
-        otmena = pv.get('Отмена СП (да/нет)') or 'нет'
         # адрес — из справки Ф-9 (если она привязана к этому ЛС), иначе из портянки
         addr, addr_src = resolve_addr(g, f9_items, addr_flags, mo_index)
         addr_stats[addr_src.split(' ')[0]] = addr_stats.get(addr_src.split(' ')[0], 0) + 1
@@ -2104,14 +2117,16 @@ def main():
             warn.append('Для части заявлений нет привязанной Ф-9 — адрес взят из портянки; '
                         'область и район в портянке не указываются.')
 
-    # ---- категория должника по справкам Ф-9: форма документа (СП/иск) ----
+    # ---- категория должника по справкам Ф-9: правовое основание документа ----
     if tenure_log:
         n_rent = sum(1 for t in tenure_log if 'наниматель' in t)
         n_own = sum(1 for t in tenure_log if 'собственник' in t)
         report.append('')
-        report.append('КАТЕГОРИЯ ДОЛЖНИКА ПО СПРАВКЕ Ф-9 (основание — форма документа):')
-        report.append(f'  нанимателей: {n_rent} (судебный приказ), собственников: {n_own} '
-                      '(исковое заявление)')
+        report.append('КАТЕГОРИЯ ДОЛЖНИКА ПО СПРАВКЕ Ф-9 (правовое основание документа):')
+        report.append(f'  нанимателей: {n_rent}, собственников: {n_own}')
+        report.append('  Форму документа определяет не категория, а сумма долга и отмена приказа: '
+                      'иск — при долге с пеней больше 500 000 ₽ (ст. 121 ГПК РФ) или при отменённом '
+                      'судебном приказе, во всех остальных случаях — судебный приказ.')
         for line in tenure_log:
             report.append('  ' + line)
         undefined = [str(g['ls']) for g in groups
@@ -2140,8 +2155,9 @@ def main():
     ws_s.append(['• Суд (шапка) — подставляется по типу документа; свой указывается в «Справочник ЛС».'])
     ws_s.append(['• Справки Ф-9, не привязанные к ЛС, — лист «Ф-9 не привязаны» (с причиной).'])
     ws_s.append([])
-    ws_s.append(['КАТЕГОРИЯ ПО СПРАВКЕ Ф-9 (определяет форму документа: наниматель — судебный приказ, '
-                 'собственник — исковое заявление):'])
+    ws_s.append(['КАТЕГОРИЯ ПО СПРАВКЕ Ф-9 (определяет правовое основание документа; форму документа '
+                 'определяет долг: иск — при долге с пеней больше 500 000 ₽ или при отменённом приказе, '
+                 'иначе судебный приказ):'])
     for line in tenure_log:
         ws_s.append(['• ' + line])
     if not tenure_log:
