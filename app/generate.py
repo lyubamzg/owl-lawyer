@@ -336,6 +336,10 @@ def age_years(dr, on=None):
     return on.year - dr.year - ((on.month, on.day) < (dr.month, dr.day))
 
 
+# возраст, с которого человек считается совершеннолетним
+MINOR_AGE = 18
+
+
 def fem_heuristic(fio):
     return looks_female(fio)
 
@@ -491,6 +495,13 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
                     else:
                         warnings.append(f'ЛС {ls}: у «{fio}» нет даты рождения, но лицо не входит '
                                         f'в {typ} (по графе Ф-9) — на сбор не влияет.')
+                if (dr is not None and age_years(dr) < MINOR_AGE
+                        and fio_key(fio) not in graph_keys):
+                    # несовершеннолетний, зарегистрированный в квартире, в судебный
+                    # документ не включается (в книге «Должники» строка остаётся)
+                    warnings.append(f'ЛС {ls}: исключён из документа (несовершеннолетний, '
+                                    f'{age_years(dr)} лет): {fio}, {dr.strftime("%d.%m.%Y")}.')
+                    continue
                 person = {'fio': fio, 'fem': fem, 'dr': dr,
                           'place': cell_str(dd.get('Место рождения')),
                           'pasport': cell_str(dd.get('Паспорт (кем и когда выдан)'))}

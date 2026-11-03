@@ -46,6 +46,29 @@ if not IN_GUESS.is_dir():
 OUT_BOOK = BASE / 'housing-input.xlsx'
 
 DATE_RE = re.compile(r'\b(\d{2}[.,]\d{2}[.,](?:19|20)\d{2})\b')
+
+# возраст, с которого человек считается совершеннолетним
+MINOR_AGE = 18
+
+
+def age_at(dr, on=None):
+    """Возраст по дате рождения (строка ДД.ММ.ГГГГ или datetime); None — если не разобрали."""
+    if not dr:
+        return None
+    if isinstance(dr, datetime):
+        d = dr.date()
+    elif isinstance(dr, date):
+        d = dr
+    else:
+        m = re.match(r'\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})', str(dr))
+        if not m:
+            return None
+        try:
+            d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
+    on = on or date.today()
+    return on.year - d.year - ((on.month, on.day) < (d.month, d.day))
 PASPORT_RE = re.compile(r'(?<![\d.])((?:4|8)\d{3})\s?,?\s?(\d{6})(?!\d)')
 # лицевой счёт, написанный ВНУТРИ справки: «лицевой счёт № 000000101», «л/с 000000101»
 # допустимы пробелы/дефисы/точки внутри номера: «065 005 800», «065-005-800»
@@ -1798,6 +1821,7 @@ def main():
             wb['Инструкция']['A1'].value = 'КНИГА ВВОДА (сформирована импортом из «Портянки» и Ф-9)'
     ws_z, ws_d = wb['Заявления'], wb['Должники']
     n_claim, n_person = 0, 0
+    minors = []          # несовершеннолетние из справок Ф-9 (в документ не идут)
 
     # Справочник ЛС и ручные правки прежней книги переживают переимпорт.
     # Справочник читаем из ПРЕЖНЕЙ книги (её уже скопировали в бэкап выше) и
@@ -1923,6 +1947,11 @@ def main():
                     dr = find_dr_by_name(f9_texts, nm)
                 rows.append([g['ls'], nm, dr, p['place'], pp, ''])  # Пол — пусто
                 n_person += 1
+                age = age_at(dr)
+                if age is not None and age < MINOR_AGE:
+                    # несовершеннолетний, зарегистрированный в квартире, —
+                    # в судебный документ не включается (в книге остаётся)
+                    minors.append((g['ls'], nm, dr, age))
             for p in g['persons']:
                 key = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
                 if key not in f9_keys and clean(p['surname']) not in {k[0] for k in f9_keys}:
@@ -2127,6 +2156,12 @@ def main():
     ws_d.column_dimensions['F'].width = 28
 
     wb.save(OUT_BOOK)
+    if minors:
+        report.append('')
+        report.append('НЕСОВЕРШЕННолетние из справок Ф-9 (в судебный документ НЕ включаются, '
+                      'в книге «Должники» строка остаётся):')
+        for mls, mnm, mdr, mage in minors:
+            report.append(f'  ЛС {mls}: {mnm}, {mdr} — {mage} лет')
     report += ['', f'Записано заявлений: {n_claim}; строк должников: {n_person}',
                f'Предупреждений сверки: {len(set(warn))}',
                f'Книга сохранена: {OUT_BOOK}']
