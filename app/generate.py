@@ -100,10 +100,76 @@ def fmt_price(x):
     return f'{fmt_num(x)} {plural(r, "рубль", "рубля", "рублей")}'
 
 
-def surname_genitive(surname, fem):
-    """Родительный падеж фамилии: Иванов→Иванова, Петрова→Петровой."""
+# фамилии на -ий именительного типа (творительный на -ием: … → …ием)
+# склоняются как имена, а прилагательные («Русский» → Русским) — как прилагательные
+ADJ_IJ_STEMS = {
+    'русск', 'тонк', 'дик', 'лыс', 'мокр', 'рыж', 'хмур', 'тих', 'лих',
+    'высок', 'глубок', 'ближн', 'дальн', 'старш', 'молод', 'крепк',
+    'широк', 'сладк', 'горьк', 'громк', 'звонк', 'хрупк', 'терпк',
+}
+
+# мужские имена на -а/-я, чтобы не принять их за женские
+MALE_NAME_A = {
+    'илья', 'никита', 'кузьма', 'фома', 'савва', 'лука', 'иса', 'данила',
+    'кума', 'мика', 'куна', 'куки',
+}
+
+
+def _ij_is_adjective(low):
+    """Фамилия на -ий — прилагательного типа («Русский») или именительного."""
+    return low[:-2] in ADJ_IJ_STEMS
+
+
+def looks_female(fio):
+    """Женский пол по ФИО.
+
+    Основной признак — фамилия на -а/-я (мужские фамилии так не кончаются).
+    Если фамилия не даёт ответа (несклоняемая на согласную), смотрим имя.
+    """
+    parts = str(fio or '').split()
+    if not parts:
+        return False
+    if parts[0].lower().endswith(('а', 'я')):
+        return True
+    if len(parts) > 1:
+        name = parts[1].lower()
+        if name.endswith(('а', 'я')) and name not in MALE_NAME_A:
+            return True
+    return False
+
+
+def surname_case(surname, fem, case='gen'):
+    """Падеж фамилии.
+
+    case='gen' — родительный: Иванов→Иванова, Соколов→Соколова, Морозова→Морозовой
+    (в «ПРОШУ» судебного приказа: «на имя Фамилия И.О.»).
+    case='ins' — творительный: Иванов→Ивановым, Соколов→Соколовым, Морозова→Морозовой
+    (в «ПРОШУ» иска: «Взыскать с Фамилия И.О.»).
+    """
     s = surname.strip()
     low = s.lower()
+    if case == 'ins':
+        if fem:
+            if low.endswith('ая'):
+                return s[:-2] + 'ой'
+            if low.endswith('яя'):
+                return s[:-2] + 'ей'
+            if low.endswith(('а', 'я')):
+                return s[:-1] + 'ой'
+            return s  # -й/-е и прочие не склоняются
+        if low.endswith(('ов', 'ев', 'ёв', 'ин', 'ын')):
+            return s + 'ым'
+        if low.endswith('ый'):
+            return s[:-2] + 'ым'      # -ый: …ым
+        if low.endswith('ий'):
+            # -ий именительного типа (… → …ием) склоняется как имя,
+            # прилагательные («Русский» → Русским) — как прилагательные
+            return s[:-2] + ('им' if _ij_is_adjective(low) else 'ием')
+        if low.endswith(('ский', 'цкий', 'ой')):
+            return s[:-2] + 'им'
+        if low.endswith('ь'):
+            return s[:-1] + 'ём'
+        return s          # не склоняется (фамилия на согласную)
     if fem:
         if low.endswith(('ая',)):
             return s[:-2] + 'ой'
@@ -112,21 +178,24 @@ def surname_genitive(surname, fem):
         if low.endswith(('а', 'я')):
             return s[:-1] + 'ой'
         return s  # -их/-ых и прочие не склоняются
-    else:
-        if low.endswith(('ов', 'ев', 'ёв', 'ин', 'ын')):
-            return s + 'а'
-        if low.endswith(('ский', 'цкий')):
-            return s[:-2] + 'ого'
-        if low.endswith('ой'):
-            return s[:-2] + 'ого'
-        return s  # не склоняются (заканчиваются на согласную без -ов/-ин и т.п.)
+    if low.endswith(('ов', 'ев', 'ёв', 'ин', 'ын')):
+        return s + 'а'
+    if low.endswith(('ский', 'цкий')):
+        return s[:-2] + 'ого'
+    if low.endswith('ий'):
+        return s[:-2] + ('ого' if _ij_is_adjective(low) else 'ия')
+    if low.endswith(('ой', 'ый')):
+        return s[:-2] + 'ого'
+    if low.endswith('ь'):
+        return s[:-1] + 'я'          # -ь на -я
+    return s                        # не склоняется (фамилия на согласную)
 
 
 PAREN_RE = re.compile(r'\s*\([^()]*\)')
 
 
 def clean_fio(fio):
-    """Убирает девичью фамилию в скобках: «Иванова (Сурмава) И.Г.» → «Иванова И.Г.»."""
+    """Убирает девичью фамилию в скобках: «Иванова (Примерова) И.Г.» → «Иванова И.Г.»."""
     return PAREN_RE.sub('', fio).strip()
 
 
@@ -143,12 +212,12 @@ def clean_addr(addr):
     return a
 
 
-def fio_short(fio, fem):
-    """Иванов Иван Иванович → Иванова И.И. (в родительном падеже для ПРОШУ)."""
+def fio_short(fio, fem, case='gen'):
+    """Иванов Иван Иванович → Иванова И.И. (в нужном падеже для ПРОШУ)."""
     parts = clean_fio(fio).split()
     if len(parts) < 3:   # лицо графы Ф-9 без полных данных в «Должники» — оставляем как есть
         return fio
-    fam = surname_genitive(parts[0], fem)
+    fam = surname_case(parts[0], fem, case)
     return f'{fam} {parts[1][0]}.{parts[2][0]}.'
 
 
@@ -268,8 +337,7 @@ def age_years(dr, on=None):
 
 
 def fem_heuristic(fio):
-    f = str(fio).split()[0].lower() if str(fio).split() else ''
-    return f.endswith(('а', 'я'))
+    return looks_female(fio)
 
 
 def resolve_graph_person(gname, dlist, warnings, ls):
@@ -395,7 +463,7 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
         for dd in dlist:
             fio = re.sub(r'\s+', ' ', cell_str(dd.get('ФИО полностью')))
             pol = cell_str(dd.get('Пол')).lower()[:1]
-            fem = pol == 'ж' or (pol != 'м' and fio.split()[0].lower().endswith(('а', 'я'))) if fio else False
+            fem = pol == 'ж' or (pol != 'м' and looks_female(fio)) if fio else False
             graph_mode = sp_graph_mode or isk_graph_mode
             used = not graph_mode or fio_key(fio) in graph_keys
             if not fio:
@@ -580,7 +648,9 @@ RUKOVODSTVO = {
 
 
 def prishu_text(c, vz):
-    shorts = ', '.join(fio_short(p['fio'], p['fem']) for p in c['persons'])
+    # в приказе — «на имя <родительный>», в иске — «Взыскать с <творительный>»
+    shorts = ', '.join(fio_short(p['fio'], p['fem'],
+                                 'gen' if c['typ'] == 'СП' else 'ins') for p in c['persons'])
     dolg = sum_words(c['dolg'])
     posh = sum_words(c['poshlina'])
     period = f'за период с {fmt_date(c["d1"])} по {fmt_date(c["d2"])} года'
@@ -636,6 +706,14 @@ def person_line(p):
 
 
 # ---------------------------------------------------------------- word ----
+# в тексте жирным выделяются период и суммы — их должно быть видно при чтении
+BOLD_RE = re.compile(
+    r'(с \d{2}\.\d{2}\.\d{4} по \d{2}\.\d{2}\.\d{4})'      # период
+    r'|(\d[\d ]*\([^()]*\) руб\w+ \d{2} коп\w+)'                # сумма прописью
+    r'|(\d[\d ]*,\d{2} руб\w+)'                                # сумма в шапке
+)
+
+
 def add_par(doc, text, align='justify', indent=True, bold=False):
     p = doc.add_paragraph()
     pf = p.paragraph_format
@@ -644,8 +722,17 @@ def add_par(doc, text, align='justify', indent=True, bold=False):
         pf.first_line_indent = Cm(1.25)
     p.alignment = {'center': WD_ALIGN_PARAGRAPH.CENTER, 'justify': WD_ALIGN_PARAGRAPH.JUSTIFY,
                    'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}[align]
-    r = p.add_run(text)
-    r.bold = bold
+    last = 0
+    for m in BOLD_RE.finditer(text):
+        if m.start() > last:
+            r = p.add_run(text[last:m.start()])
+            r.bold = bold
+        r = p.add_run(m.group(0))
+        r.bold = True
+        last = m.end()
+    if last < len(text):
+        r = p.add_run(text[last:])
+        r.bold = bold
     return p
 
 
