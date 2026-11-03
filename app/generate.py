@@ -400,6 +400,10 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
             seen_ls[ls] = row
         if not cell_str(c.get('Суд (шапка)')):
             err(f'Заявление {n} (строка {row}): не указан суд.')
+        elif 'пример' in cell_str(c.get('Суд (шапка)')).lower():
+            warnings.append(f'Заявление {n} (строка {row}): в шапке условный суд '
+                            f'«{cell_str(c.get("Суд (шапка)"))}» — для подачи укажите настоящий '
+                            'участок: лист «Справочник ЛС» или настройка «суд (шапка)».')
         if not cell_str(c.get('Адрес регистрации')):
             err(f'Заявление {n} (строка {row}): не указан адрес регистрации.')
 
