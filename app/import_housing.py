@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Импорт данных в книгу ввода из:
-  - «Портянки» (Excel расчёта: тип, ЛС, ФИО, адрес, период, долг, пени, госпошлина);
+  - «Портянки» (Excel расчёта: тип, ЛС, ФИО, адрес, период, долг, пени, госпошлина).
+    Читаются ВСЕ листы книги: в каждом листе ищется таблица портянки (строка
+    заголовков «№ п/п»), блоков в листе может быть несколько; листы без таблицы
+    пропускаются с пометкой в отчёте;
   - скана(-ов) справки формы 9 (OCR: ФИО, дата рождения, паспорт).
 
 Использование:
@@ -165,70 +168,139 @@ def parse_date(v):
     return None
 
 
-def load_portyanka(path):
-    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    header_i = next((i for i, r in enumerate(rows)
-                     if r and str(r[0]).strip() == '№ п/п'), None)
-    if header_i is None:
-        sys.exit('В портянке не найдена строка заголовков (№ п/п).')
-    heads = [str(v).strip() if v is not None else '' for v in rows[header_i]]
-    idx = {h: j for j, h in enumerate(heads) if h}
+def _norm_cell(v):
+    return re.sub(r'\s+', ' ', str(v if v is not None else '')).strip()
 
-    items, warn = [], []
-    for i, row in enumerate(rows[header_i + 1:], header_i + 2):
-        if str(row[0] or '').strip().upper() == 'ИТОГО':
-            break
 
-        def val(name):
-            if name not in idx:
-                return None
-            return row[idx[name]] if idx[name] < len(row) else None
+# заголовки столбцов портянки в разных вариантах написания
+PORT_COL_ALIASES = {
+    '№ п/п': '№ п/п',
+    '№п/п': '№ п/п',
+    'тип': 'Тип',
+    'лицевой счет': 'Лицевой счет',
+    'лицевой счёт': 'Лицевой счет',
+    'лицевойсчет': 'Лицевой счет',
+    'лицевойсчёт': 'Лицевой счет',
+    'фио': 'ФИО',
+    'адрес': 'Адрес',
+    'период': 'Период',
+    'сумма долга': 'Сумма долга',
+    'сумма долга пени': 'Сумма долга пени',
+    'сумма долга итого': 'Сумма долга итого',
+    'общая гп': 'Общая ГП',
+}
 
-        typ_raw = str(val('Тип') or '').strip()
-        ls = str(val('Лицевой счет') or '').strip()
-        if not ls:
-            warn.append(f'строка {i}: нет лицевого счёта — строка пропущена')
+
+def _port_header_key(name):
+    """Приводит заголовок столбца к каноническому виду (регистр, «ё», пробелы)."""
+    n = re.sub(r'\s+', ' ', str(name or '')).strip().lower().replace('ё', 'е')
+    return PORT_COL_ALIASES.get(n, n)
+
+
+def _find_port_headers(rows):
+    """Номера строк с заголовками таблицы. В листе блоков может быть несколько."""
+    heads = []
+    for i, r in enumerate(rows):
+        cells = [_norm_cell(v) for v in r]
+        low = [c.lower().replace('ё', 'е') for c in cells]
+        if low and low[0].replace(' ', '') in ('№п/п', '№п.п'):
+            heads.append(i)
             continue
-        if 'иск' in typ_raw.lower():
-            typ = 'ИСК'
-        elif 'приказ' in typ_raw.lower():
-            typ = 'СП'
-        else:
-            warn.append(f'строка {i} (ЛС {ls}): неизвестный тип «{typ_raw}»')
-            typ = ''
-        if not str(val('ФИО') or '').strip():
-            warn.append(f'строка {i} (ЛС {ls}): пустое ФИО в портянке')
+        joined = ' | '.join(low)
+        if 'фио' in joined and ('лицевой счет' in joined or 'лицевой счёт' in joined):
+            heads.append(i)
+    return heads
 
-        def num(name):
-            v = val(name)
-            if v in (None, ''):
-                return None
-            try:
-                return float(str(v).replace(' ', '').replace(',', '.'))
-            except ValueError:
-                warn.append(f'строка {i} (ЛС {ls}): не распознана сумма «{name}»: {v}')
-                return None
 
-        d1, d2, perr = parse_period(val('Период'))
-        if perr:
-            warn.append(f'строка {i} (ЛС {ls}): {perr}')
-        dolg, peni, gp = num('Сумма долга'), num('Сумма долга пени'), num('Общая ГП')
-        if dolg is not None and peni is not None:
-            try:
-                itogo = num('Сумма долга итого')
-                if itogo is not None and abs(itogo - (dolg + peni)) > 0.011:
-                    warn.append(f'строка {i} (ЛС {ls}): сумма итого {itogo:.2f} ≠ долг+пени {dolg + peni:.2f}')
-            except (TypeError, ValueError):
-                pass
-        addr = re.sub(r'\s+', ' ', str(val('Адрес') or '').strip())
-        persons, minors = fio_candidates(val('ФИО'))
-        if not persons:
-            warn.append(f'строка {i} (ЛС {ls}): из поля «{val("ФИО")}» не извлечено ни одного ФИО')
-        items.append({'row': i, 'typ': typ, 'typ_raw': typ_raw, 'ls': ls, 'persons': persons,
-                      'minors_text': minors, 'addr': addr, 'd1': d1, 'd2': d2,
-                      'dolg': dolg, 'peni': peni, 'gp': gp})
+def load_portyanka(path):
+    """Читаем портянку со ВСЕХ листов книги.
+
+    В каждом листе ищем блоки таблицы (строка заголовков «№ п/п»); в одном листе
+    блоков может быть несколько. Данные блока заканчиваются строкой «ИТОГО»."""
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    items, warn = [], []
+    used_sheets = []
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        heads = _find_port_headers(rows)
+        if not heads:
+            continue
+        for n, header_i in enumerate(heads):
+            end = heads[n + 1] if n + 1 < len(heads) else len(rows)
+            block = rows[header_i:end]
+            idx = {}
+            for j, h in enumerate(block[0]):
+                key = _port_header_key(h)
+                if key and key not in idx:
+                    idx[key] = j
+            if 'Лицевой счет' not in idx or 'ФИО' not in idx:
+                missing = [n for n in ('Лицевой счет', 'ФИО') if n not in idx]
+                warn.append(f'лист «{ws.title}», строка {header_i + 1}: нет столбцов '
+                            f'«{", ".join(missing)}» — блок не похож на портянку, пропущен')
+                continue
+            used_sheets.append(ws.title)
+            for i, row in enumerate(block[1:], header_i + 2):
+                if str(row[0] or '').strip().upper().startswith('ИТОГО'):
+                    break
+                tag = f'{ws.title}, строка {i}'
+
+                def val(name):
+                    j = idx.get(name)
+                    if j is None:
+                        return None
+                    return row[j] if j < len(row) else None
+
+                typ_raw = str(val('Тип') or '').strip()
+                ls = str(val('Лицевой счет') or '').strip()
+                if not ls:
+                    warn.append(f'{tag}: нет лицевого счёта — строка пропущена')
+                    continue
+                if 'иск' in typ_raw.lower():
+                    typ = 'ИСК'
+                elif 'приказ' in typ_raw.lower():
+                    typ = 'СП'
+                else:
+                    warn.append(f'{tag} (ЛС {ls}): неизвестный тип «{typ_raw}»')
+                    typ = ''
+                if not str(val('ФИО') or '').strip():
+                    warn.append(f'{tag} (ЛС {ls}): пустое ФИО в портянке')
+
+                def num(name):
+                    v = val(name)
+                    if v in (None, ''):
+                        return None
+                    try:
+                        return float(str(v).replace(' ', '').replace(',', '.'))
+                    except ValueError:
+                        warn.append(f'{tag} (ЛС {ls}): не распознана сумма «{name}»: {v}')
+                        return None
+
+                d1, d2, perr = parse_period(val('Период'))
+                if perr:
+                    warn.append(f'{tag} (ЛС {ls}): {perr}')
+                dolg, peni, gp = num('Сумма долга'), num('Сумма долга пени'), num('Общая ГП')
+                if dolg is not None and peni is not None:
+                    try:
+                        itogo = num('Сумма долга итого')
+                        if itogo is not None and abs(itogo - (dolg + peni)) > 0.011:
+                            warn.append(f'{tag} (ЛС {ls}): сумма итого {itogo:.2f} ≠ долг+пени {dolg + peni:.2f}')
+                    except (TypeError, ValueError):
+                        pass
+                addr = re.sub(r'\s+', ' ', str(val('Адрес') or '').strip())
+                persons, minors = fio_candidates(val('ФИО'))
+                if not persons:
+                    warn.append(f'{tag} (ЛС {ls}): из поля «{val("ФИО")}» не извлечено ни одного ФИО')
+                items.append({'row': f'{ws.title}:{i}', 'sheet': ws.title, 'typ': typ,
+                              'typ_raw': typ_raw, 'ls': ls, 'persons': persons,
+                              'minors_text': minors, 'addr': addr, 'd1': d1, 'd2': d2,
+                              'dolg': dolg, 'peni': peni, 'gp': gp})
+    if not items:
+        sys.exit('В портянке не найдено ни одной строки с лицевым счётом. '
+                 'Проверены листы: ' + ', '.join(wb.sheetnames) + '. '
+                 'Ожидается таблица со строкой заголовков «№ п/п».')
+    skipped = [s for s in wb.sheetnames if s not in set(used_sheets)]
+    if skipped:
+        warn.append('листы без таблицы портянки пропущены: ' + ', '.join(skipped))
     return items, warn
 
 
