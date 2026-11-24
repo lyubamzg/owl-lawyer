@@ -15,6 +15,7 @@
 """
 import re
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -23,6 +24,11 @@ import platform_utils
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, Pt
+
+try:                       # определение суда и почтового индекса по адресу (ГАС «Правосудие»)
+    import sudrf_lookup
+except Exception:          # noqa: BLE001 — без модуля генератор работает как раньше
+    sudrf_lookup = None
 
 BASE = Path(__file__).resolve().parent
 
@@ -367,7 +373,7 @@ def resolve_graph_person(gname, dlist, warnings, ls):
 
 
 # ---------------------------------------------------------------- сверка ----
-def normalize_claims(claims, debtors, errors, warnings, f9=None):
+def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=False):
     norm = []
     seen_ls = {}
     by_ls_deb = {}
@@ -399,11 +405,20 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
         else:
             seen_ls[ls] = row
         if not cell_str(c.get('Суд (шапка)')):
-            err(f'Заявление {n} (строка {row}): не указан суд.')
+            if auto_court:
+                warnings.append(f'Заявление {n} (строка {row}): суд не указан — будет определён '
+                                'по адресу ответчика (ГАС «Правосудие»).')
+            else:
+                err(f'Заявление {n} (строка {row}): не указан суд.')
         elif 'пример' in cell_str(c.get('Суд (шапка)')).lower():
-            warnings.append(f'Заявление {n} (строка {row}): в шапке условный суд '
-                            f'«{cell_str(c.get("Суд (шапка)"))}» — для подачи укажите настоящий '
-                            'участок: лист «Справочник ЛС» или настройка «суд (шапка)».')
+            if auto_court:
+                warnings.append(f'Заявление {n} (строка {row}): в шапке условный суд '
+                                f'«{cell_str(c.get("Суд (шапка)"))}» — он будет заменён на суд, '
+                                'определённый по адресу ответчика (ГАС «Правосудие»).')
+            else:
+                warnings.append(f'Заявление {n} (строка {row}): в шапке условный суд '
+                                f'«{cell_str(c.get("Суд (шапка)"))}» — для подачи укажите настоящий '
+                                'участок: лист «Справочник ЛС» или настройка «суд (шапка)».')
         if not cell_str(c.get('Адрес регистрации')):
             err(f'Заявление {n} (строка {row}): не указан адрес регистрации.')
 
@@ -580,6 +595,111 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None):
         if claim_errors:
             bad_claim[n] = claim_errors
     return norm, bad_claim
+
+
+# -------------------------------------------- подсудность и почтовый индекс ----
+def _flag(value, default=True):
+    """Настройка «да/нет»: «нет», «no», «off», «0», «выкл» — это выключить."""
+    v = str(value or '').strip().lower()
+    if not v:
+        return default
+    return v not in ('нет', 'no', 'off', '0', 'выкл', 'n', 'false')
+
+
+def _sud_key(text):
+    t = re.sub(r'\s+', ' ', str(text or '')).strip().lower()
+    m = re.search(r'№\s*(\d+)', t)
+    return m.group(1) if m else re.sub(r'[^0-9a-zа-я]+', '', t)
+
+
+def _sud_equiv(a, b):
+    """Один и тот же суд? «участок № 45» и «участка № 45» — один участок."""
+    ta, tb = str(a or ''), str(b or '')
+    if not ta.strip() or not tb.strip():
+        return False
+    if _sud_key(ta) == _sud_key(tb):
+        return True
+    ma = re.search(r'№\s*(\d+)', ta)
+    mb = re.search(r'№\s*(\d+)', tb)
+    if ma and mb and ma.group(1) == mb.group(1):
+        return 'участ' in ta.lower() and 'участ' in tb.lower()
+    return False
+
+
+def apply_jurisdiction(docs, cfg, warnings):
+    """Суд по адресу (ГАС «Правосудие») и почтовый индекс в адрес ответчика.
+
+    Настройки листа «Настройки»:
+      «подсудность (авто)»      — да/нет: суд определяется по адресу (по умолчанию да);
+      «индекс в адресе»         — да/нет: в адрес дописывается почтовый индекс;
+      «порог мирового судьи, руб.» — до какой цены иска — мировой судья (ст. 23 ГПК РФ).
+
+    Возвращает (документы, [(№ заявления, ошибка)]): заявления, у которых в итоге
+    не осталось суда, из документов убираются — с ними лучше разобраться руками.
+    """
+    if not docs or sudrf_lookup is None:
+        return docs, []
+    auto = _flag(cfg.get('подсудность (авто)'), True)
+    idx_on = _flag(cfg.get('индекс в адресе'), True)
+    if not auto and not idx_on:
+        return docs, []
+    threshold = parse_sum(cfg.get('порог мирового судьи, руб.')) or 50000
+    dropped = []
+    cache = {}
+    reported = set()
+    for c in docs:
+        addr = c.get('addr') or ''
+        if not addr:
+            continue
+        if addr not in cache:
+            try:
+                cache[addr] = sudrf_lookup.lookup(addr)
+            except Exception as ex:  # noqa: BLE001
+                cache[addr] = {'ok': False, 'error': str(ex), 'notes': [],
+                                'postal_code': '', 'courts': []}
+            time.sleep(0.2)
+        res = cache[addr]
+        for note in res.get('notes') or []:
+            if note not in reported:   # один и тот же адрес — одна заметка
+                reported.add(note)
+                warnings.append(f'Адрес «{addr}»: {note}')
+
+        # --- почтовый индекс в адрес ответчика ---
+        if idx_on:
+            idx = str(res.get('postal_code') or '')
+            if idx and not sudrf_lookup.has_index(addr):
+                c['addr'] = sudrf_lookup.add_index(addr, idx)
+                warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): в адрес добавлен почтовый '
+                                f'индекс {idx} ({res.get("index_level") or "по ФИАС"}).')
+            elif not idx and not res.get('service_down'):
+                warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): почтовый индекс по адресу '
+                                f'«{addr}» не найден — в адрес он не вставлен.')
+
+        # --- суд в шапке ---
+        if auto:
+            manual = ' / '.join(x for x in c.get('sud') or [] if x)
+            lines, note, res2 = sudrf_lookup.court_for_addr(
+                addr, typ=c['typ'], cena=(c.get('dolg') or 0) + (c.get('peni') or 0),
+                threshold=threshold, res=res)
+            if lines:
+                c['sud'] = lines
+                if manual and not _sud_equiv(manual, lines[0]):
+                    warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд по адресу (ГАС '
+                                    f'«Правосудие») — «{lines[0]}» — отличается от указанного '
+                                    f'вручную «{manual}». В документ подставлен суд по адресу.')
+                else:
+                    warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд в шапке определён '
+                                    f'по адресу — {note}.')
+            elif not manual:
+                dropped.append((c['num'], f'Заявление {c["num"]} (ЛС {c["ls"]}): суд не найден '
+                                          f'по адресу «{addr}» и не указан вручную — документ '
+                                          f'не сформирован.'))
+            else:
+                warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд по адресу «{addr}» '
+                                f'определить не удалось — в шапке оставлен суд, указанный вручную '
+                                f'({manual}).')
+    keep = [c for c in docs if c['num'] not in {n for n, _ in dropped}]
+    return keep, dropped
 
 
 # ---------------------------------------------------------------- текст ----
@@ -918,8 +1038,16 @@ def main():
     errors, warnings = [], []
     warnings.append('Склонение фамилий в графе «ПРОШУ» выполняется автоматически — выборочно '
                     'просмотрите его в готовых документах.')
-    docs, bad_claim = normalize_claims(claims, debtors, errors, warnings, f9_texts)
+    auto_court = sudrf_lookup is not None and _flag(cfg.get('подсудность (авто)'), True)
+    docs, bad_claim = normalize_claims(claims, debtors, errors, warnings, f9_texts,
+                                        auto_court=auto_court)
     docs = [c for c in docs if c['num'] not in bad_claim]
+    if auto_court or _flag(cfg.get('индекс в адресе'), True):
+        print('Определяю суд и почтовый индекс по адресу (ГАС «Правосудие»)…', flush=True)
+    docs, dropped = apply_jurisdiction(docs, cfg, warnings)
+    for num, msg in dropped:
+        bad_claim.setdefault(num, []).append(msg)
+        errors.append(msg)
     for c in docs:   # текст справки Ф-9 в документ не вставляется (её прикладывают
         if not c.get('f9_texts'):   # вручную), но по ней определяется состав лиц —
             warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): справка формы 9 не привязана — '

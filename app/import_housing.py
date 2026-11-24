@@ -42,6 +42,11 @@ import openpyxl
 
 import platform_utils
 
+try:                       # суд по адресу ответчика (ГАС «Правосудие»)
+    import sudrf_lookup
+except Exception:          # noqa: BLE001 — без модуля импорт работает как раньше
+    sudrf_lookup = None
+
 BASE = Path(__file__).resolve().parent
 IN_GUESS = BASE.parent / 'incoming'
 if not IN_GUESS.is_dir():
@@ -1620,6 +1625,24 @@ def real_sud(value):
     return '' if is_placeholder_sud(v) else v
 
 
+def _flag_on(value, default=True):
+    """Настройка «да/нет»: «нет», «no», «off», «0», «выкл» — это выключить."""
+    v = str(value or '').strip().lower()
+    if not v:
+        return default
+    return v not in ('нет', 'no', 'off', '0', 'выкл', 'n', 'false')
+
+
+def _num(value, default=0):
+    """Число из настройки («50000» → 50000.0)."""
+    s = re.sub(r'[^0-9,.]', '', str(value or '').replace(' ', '').replace('\xa0', ''))
+    s = s.replace(',', '.')
+    try:
+        return float(s) if s else default
+    except ValueError:
+        return default
+
+
 def read_settings(wb):
     """Лист «Настройки» → {параметр: значение}."""
     out = {}
@@ -2015,6 +2038,12 @@ def main():
     # попадать не должен (инцидент 03.11.2026: 26 документов ушли в участок № 75).
     settings = read_settings(prior_wb) if prior_wb else {}
     sud_setting = real_sud(settings.get('суд (шапка)'))
+    # суд по адресу ответчика (ГАС «Правосудие») — если суд нигде не задан
+    auto_sud_on = sudrf_lookup is not None and _flag_on(settings.get('подсудность (авто)'), True)
+    sud_threshold = _num(settings.get('порог мирового судьи, руб.')) or 50000
+    if auto_sud_on:
+        report.append('Суд в шапке: если он не задан в «Справочнике ЛС» / настройке «суд (шапка)» — '
+                      'определяется по адресу ответчика (ГАС «Правосудие», sudrf.ru).')
     sud_common = most_common_sud(
         {ls: rec.get('Суд (шапка)') for ls, rec in guide.items()},
         {f'{t}|{ls}': rec.get('Суд (шапка)') for (t, ls), rec in prev.items()},
@@ -2088,12 +2117,6 @@ def main():
         if not cat:
             warn.append(f'ЛС {ls}: не указана категория (наниматель/собственник) — впишите в лист '
                         '«Справочник ЛС», заявление без неё не соберётся.')
-        if not sud:
-            sud = default_sud(typ)
-            if sud:
-                warn.append(f'ЛС {ls}: суд НЕ НАЙДЕН в таблице («Справочник ЛС», прежняя книга, '
-                            f'настройка «суд (шапка)») — подставлен условный суд по типу документа '
-                            f'({typ}). Проверьте участок!')
         housing = (guide.get(ls, {}).get('Тип жилья (текст)')
                    or pv.get('Тип жилья (текст)') or '')
         cena = pv.get('Цена иска, руб.') or ''
@@ -2102,6 +2125,24 @@ def main():
         addr_stats[addr_src.split(' ')[0]] = addr_stats.get(addr_src.split(' ')[0], 0) + 1
         if addr_src == 'портянка':
             addr_flags.add('без_ф9')
+        if not sud and auto_sud_on and addr:
+            # суд не задан нигде — определяем по адресу ответчика (ГАС «Правосудие»)
+            res0 = sudrf_lookup.lookup(addr)
+            lines, note, res = sudrf_lookup.court_for_addr(
+                addr, typ=typ, cena=(g.get('dolg') or 0) + (g.get('peni') or 0),
+                threshold=sud_threshold, res=res0)
+            if lines:
+                sud = lines[0]      # в книгу — одна строка, без адреса суда
+                report.append(f'ЛС {ls}: суд определён по адресу — {sud}')
+            else:
+                warn.append(f'ЛС {ls}: суд по адресу «{addr}» определить не удалось — '
+                            'укажите участок в «Справочнике ЛС» или в настройке «суд (шапка)».')
+        if not sud:
+            sud = default_sud(typ)
+            if sud:
+                warn.append(f'ЛС {ls}: суд НЕ НАЙДЕН в таблице («Справочник ЛС», прежняя книга, '
+                            f'настройка «суд (шапка)») — подставлен условный суд по типу документа '
+                            f'({typ}). Проверьте участок!')
         ws_z.append([n, typ, cat, ls, sud, addr, housing,
                      fmt_d(sost_on(g['d2'])), fmt_d(g['d1']), fmt_d(g['d2']), g['dolg'],
                      fmt_d(g['d1']), fmt_d(g['d2']), g['peni'], g['gp'], cena, otmena])
