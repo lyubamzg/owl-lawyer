@@ -598,6 +598,18 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=Fals
 
 
 # -------------------------------------------- подсудность и почтовый индекс ----
+def _cfg_get(cfg, name, default=None):
+    """Значение настройки из листа «Настройки».
+
+    Ключи в книге нормализуются (пробелы → подчёркивания), поэтому и здесь
+    ищем по тому же правилу, а не по написанному в ячейке.
+    """
+    key = str(name or '').strip().lower().replace(' ', '_')
+    if key in cfg:
+        return cfg[key]
+    return cfg.get(str(name or '').strip().lower(), default)
+
+
 def _flag(value, default=True):
     """Настройка «да/нет»: «нет», «no», «off», «0», «выкл» — это выключить."""
     v = str(value or '').strip().lower()
@@ -639,11 +651,11 @@ def apply_jurisdiction(docs, cfg, warnings):
     """
     if not docs or sudrf_lookup is None:
         return docs, []
-    auto = _flag(cfg.get('подсудность (авто)'), True)
-    idx_on = _flag(cfg.get('индекс в адресе'), True)
+    auto = _flag(_cfg_get(cfg, 'подсудность (авто)'), True)
+    idx_on = _flag(_cfg_get(cfg, 'индекс в адресе'), True)
     if not auto and not idx_on:
         return docs, []
-    threshold = parse_sum(cfg.get('порог мирового судьи, руб.')) or 50000
+    threshold = parse_sum(_cfg_get(cfg, 'порог мирового судьи, руб.')) or 50000
     dropped = []
     cache = {}
     reported = set()
@@ -1038,11 +1050,11 @@ def main():
     errors, warnings = [], []
     warnings.append('Склонение фамилий в графе «ПРОШУ» выполняется автоматически — выборочно '
                     'просмотрите его в готовых документах.')
-    auto_court = sudrf_lookup is not None and _flag(cfg.get('подсудность (авто)'), True)
+    auto_court = sudrf_lookup is not None and _flag(_cfg_get(cfg, 'подсудность (авто)'), True)
     docs, bad_claim = normalize_claims(claims, debtors, errors, warnings, f9_texts,
                                         auto_court=auto_court)
     docs = [c for c in docs if c['num'] not in bad_claim]
-    if auto_court or _flag(cfg.get('индекс в адресе'), True):
+    if auto_court or _flag(_cfg_get(cfg, 'индекс в адресе'), True):
         print('Определяю суд и почтовый индекс по адресу (ГАС «Правосудие»)…', flush=True)
     docs, dropped = apply_jurisdiction(docs, cfg, warnings)
     for num, msg in dropped:

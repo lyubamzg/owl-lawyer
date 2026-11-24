@@ -1655,6 +1655,17 @@ def read_settings(wb):
     return out
 
 
+def settings_get(settings, name, default=None):
+    """Настройка из листа «Настройки» — с запасным поиском по ключу без пробелов."""
+    if name in settings:
+        return settings[name]
+    norm = str(name or '').strip().lower().replace(' ', '_')
+    for k, v in (settings or {}).items():
+        if str(k).strip().lower().replace(' ', '_') == norm:
+            return v
+    return default
+
+
 def most_common_sud(*sources):
     """Самый частый суд среди известных значений (условные «примерные» не считаются).
 
@@ -2037,10 +2048,10 @@ def main():
     # Условный «примерный» суд из таблицы не берётся — в реальную подачу он
     # попадать не должен (инцидент 03.11.2026: 26 документов ушли в участок № 75).
     settings = read_settings(prior_wb) if prior_wb else {}
-    sud_setting = real_sud(settings.get('суд (шапка)'))
+    sud_setting = real_sud(settings_get(settings, 'суд (шапка)'))
     # суд по адресу ответчика (ГАС «Правосудие») — если суд нигде не задан
-    auto_sud_on = sudrf_lookup is not None and _flag_on(settings.get('подсудность (авто)'), True)
-    sud_threshold = _num(settings.get('порог мирового судьи, руб.')) or 50000
+    auto_sud_on = sudrf_lookup is not None and _flag_on(settings_get(settings, 'подсудность (авто)'), True)
+    sud_threshold = _num(settings_get(settings, 'порог мирового судьи, руб.')) or 50000
     if auto_sud_on:
         report.append('Суд в шапке: если он не задан в «Справочнике ЛС» / настройке «суд (шапка)» — '
                       'определяется по адресу ответчика (ГАС «Правосудие», sudrf.ru).')
