@@ -15,6 +15,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $app = Join-Path $InstallDir 'app'
 New-Item -ItemType Directory -Path $app -Force | Out-Null
 Copy-Item (Join-Path $root 'app\*.py') -Destination $app -Force
+# Флаги разделов: копируем только если файла ещё нет — правки пользователя не затираем.
+if ((Test-Path (Join-Path $root 'app\features.json')) -and -not (Test-Path (Join-Path $app 'features.json'))) {
+    Copy-Item (Join-Path $root 'app\features.json') -Destination $app
+}
 New-Item -ItemType Directory -Path (Join-Path $app 'icons') -Force | Out-Null
 Copy-Item (Join-Path $root 'app\icons\*.png') -Destination (Join-Path $app 'icons') -Force
 foreach ($name in @('input-workbook.xlsx', 'demo-housing.xlsx',

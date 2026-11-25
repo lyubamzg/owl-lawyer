@@ -8,7 +8,7 @@
 Что возвращает lookup():
 
   {'ok': True, 'postal_code': '123456', 'index_level': 'дом',
-   'fias_id': '…', 'address': 'Примерная обл, Примерный р-н, …',
+   'fias_id': '…', 'address': 'Примерная обл, Примерский р-н, …',
    'region': 'Московская обл', 'settlement': 'поселок Примерный',
    'courts': [{'kind': 'мировой', 'name': 'Судебный участок № 45 …',
                'address': '123456, …', 'code': '47MS0049'}, …],
@@ -172,6 +172,19 @@ def _strip_street(q):
     return STREET_RE.sub('', q).strip(' ,;')
 
 
+def _query_variants(query):
+    """Варианты запроса для подсказок ФИАС.
+
+    Сначала адрес как есть, затем — без «г. …»: подсказки ищутся по разным
+    сочетаниям, и название города в запросе иногда мешает найти адрес.
+    """
+    out = [query]
+    q2 = re.sub(r',\s*г\.\s*[^,]+', '', query).strip(' ,;')
+    if q2 and q2 not in out:
+        out.append(q2)
+    return out
+
+
 def locality_candidates(query):
     """Запросы для поиска индекса населённого пункта — от точного к общему."""
     q_nohouse = _strip_house(query)
@@ -332,7 +345,16 @@ def lookup(addr, region='', offline=False):
             return cache.get(f'sug|{bound}|{q}', [])
 
     # 1. дом — из него и индекс, и ФИАС-GUID для подсудности
-    best = pick_suggestion(_sug('house'), house)
+    best = None
+    for q in _query_variants(query):
+        cand = pick_suggestion(_sug('house', q), house)
+        if cand is None:
+            continue
+        if best is None:
+            best = cand
+        if (cand.get('data') or {}).get('fias_id'):
+            best = cand
+            break
     data = (best or {}).get('data') or {}
     if best:
         out['address'] = str(best.get('value') or '')
@@ -353,8 +375,23 @@ def lookup(addr, region='', offline=False):
         if not out['fias_id'] and data.get('street_fias_id'):
             out['fias_id'] = str(data.get('street_fias_id'))
 
-    # 2. индекс населённого пункта — если по дому индекса нет
-    if not out['postal_code']:
+    # 1б. дома в ФИАС нет (или он не распознался) — ищем по улице:
+    # по ней известны подсудные суды. Суд определяется по территории улицы,
+    # поэтому в документе он помечается как требующий проверки.
+    if not out['fias_id']:
+        q_street = _strip_house(query)
+        if q_street and q_street != query:
+            pick = pick_suggestion(_sug('street', q_street))
+            d = (pick or {}).get('data') or {}
+            if d.get('street_fias_id'):
+                out['fias_id'] = str(d['street_fias_id'])
+                out['notes'].append('в ФИАС нет дома — подсудность определена по улице, '
+                                    'проверьте участок суда')
+                if d.get('postal_code') and not out['postal_code']:
+                    out['postal_code'] = str(d['postal_code'])
+                    out['index_level'] = 'улица'
+
+    # 2. индекс населённого пункта — если по дому индекса нет    if not out['postal_code']:
         for bound, q2 in locality_candidates(query):
             items = _sug(bound, q2)
             pick = pick_suggestion(items)

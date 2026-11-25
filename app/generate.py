@@ -16,6 +16,7 @@
 import re
 import sys
 import time
+import difflib
 from datetime import date, datetime
 from pathlib import Path
 
@@ -29,6 +30,11 @@ try:                       # определение суда и почтовог
     import sudrf_lookup
 except Exception:          # noqa: BLE001 — без модуля генератор работает как раньше
     sudrf_lookup = None
+
+try:                       # запасной источник почтового индекса — сайт «Почты России»
+    import postrf_index
+except Exception:          # noqa: BLE001
+    postrf_index = None
 
 BASE = Path(__file__).resolve().parent
 
@@ -149,7 +155,7 @@ def surname_case(surname, fem, case='gen'):
 
     case='gen' — родительный: Иванов→Иванова, Морозова→Морозовой
     (в «ПРОШУ» судебного приказа: «на имя Фамилия И.О.»).
-    case='ins' — творительный: Иванов→Ивановым, Соколов→Соколовым, Морозова→Морозовой
+    case='ins' — творительный: Иванов→Ивановым, Фомин→Фоминым, Морозова→Морозовой
     (в «ПРОШУ» иска: «Взыскать с Фамилия И.О.»).
     """
     s = surname.strip()
@@ -201,7 +207,7 @@ PAREN_RE = re.compile(r'\s*\([^()]*\)')
 
 
 def clean_fio(fio):
-    """Убирает девичью фамилию в скобках: «Иванова (Примерова) И.Г.» → «Иванова И.Г.»."""
+    """Убирает девичью фамилию в скобках: «Иванова (Девичья) И.Г.» → «Иванова И.Г.»."""
     return PAREN_RE.sub('', fio).strip()
 
 
@@ -221,6 +227,10 @@ def clean_addr(addr):
 def fio_short(fio, fem, case='gen'):
     """Иванов Иван Иванович → Иванова И.И. (в нужном падеже для ПРОШУ)."""
     parts = clean_fio(fio).split()
+    if len(parts) == 2 and '.' in parts[1]:
+        # «Фомин А.Н.» — ответчик из «Портянки» с инициалами: фамилию
+        # склоняем, инициалы оставляем («на имя Фомина А.Н.»)
+        return f'{surname_case(parts[0], fem, case)} {parts[1]}'
     if len(parts) < 3:   # лицо графы Ф-9 без полных данных в «Должники» — оставляем как есть
         return fio
     fam = surname_case(parts[0], fem, case)
@@ -233,6 +243,29 @@ def fio_nom_short(fio):
     if len(parts) >= 3:
         return f'{parts[0]} {parts[1][0]}.{parts[2][0]}.'
     return ' '.join(parts)
+
+
+# документ на умершего подаётся на неизвестных наследников умершего
+UNKNOWN_HEIRS = 'Неизвестные наследники'
+
+
+def heirs_name(fio):
+    """«Иванов Иван Иванович» → «Неизвестные наследники Иванов Иван Иванович»."""
+    return f'{UNKNOWN_HEIRS} {fio}'
+
+
+def person_short(p, case='gen'):
+    """ФИО для графы «ПРОШУ»: «на имя неизвестных наследников Иванова И.И.»."""
+    if p.get('deceased'):
+        return f'неизвестных наследников {fio_short(p["deceased_fio"], p["fem"], case)}'
+    return fio_short(p['fio'], p['fem'], case)
+
+
+def person_short_nom(p):
+    """ФИО для имени файла и реестра (им. падеж)."""
+    if p.get('deceased'):
+        return f'{UNKNOWN_HEIRS} {fio_nom_short(p["deceased_fio"])}'
+    return fio_nom_short(p['fio'])
 
 
 # ---------------------------------------------------------------- чтение ----
@@ -278,6 +311,11 @@ def cell_str(v):
 CYR = re.compile('[а-яёА-ЯЁ]')
 LAT = re.compile('[a-zA-Z]')
 FIO_RE = re.compile(r'^[А-ЯЁ][а-яё\-]+(?:\s*\([^()]{1,40}\))? [А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]+$')
+# «Фамилия Имя» без отчества — в справках Пример («Петров Пётр»)
+FIO2_RE = re.compile(r'^[А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]+$')
+# «Фамилия И.О.» — так ответчик записан в самой «Портянке» («Фомин А.Н.»):
+# документ собирается с этим именем, юрист дописывает отчество вручную
+FIO_INIT_RE = re.compile(r'^[А-ЯЁ][а-яё\-]+ [А-ЯЁ]\.[А-ЯЁ]\.$')
 
 
 def load_workbook_data(path):
@@ -330,16 +368,37 @@ def fio_key(s):
         return ''
     inits = ''
     for tok in parts[1:4]:
-        if '.' in tok:
-            inits += tok.replace('.', '').lower()
+        t = tok.replace('.', '')
+        if not t:
+            continue
+        if len(t) <= 3 and t.isalpha() and (t.islower() or t.isupper()):
+            inits += t.lower()      # \u0438\u043d\u0438\u0446\u0438\u0430\u043b\u044b: \u00ab\u043f\u0441\u00bb, \u00ab\u041f\u0421\u00bb, \u00ab\u041f.\u0421.\u00bb
         else:
-            inits += tok[:1].lower()
+            inits += t[:1].lower()
     return parts[0].lower().replace('\u00b7', '') + '_' + inits
 
 
 def age_years(dr, on=None):
     on = on or date.today()
     return on.year - dr.year - ((on.month, on.day) < (dr.month, dr.day))
+
+
+def same_fio(a, b):
+    """То же ли лицо: те же инициалы и похожие фамилии.
+
+    Фамилии иногда расходятся на одну букву («Образцова»/«Образцов»,
+    «Иванова»/«Иванов») — такие строки относятся к одному человеку.
+    """
+    ka, kb = fio_key(a), fio_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    fa, _, ia = ka.partition('_')
+    fb, _, ib = kb.partition('_')
+    if ia != ib or not ia:
+        return False
+    return difflib.SequenceMatcher(None, fa, fb).ratio() >= 0.72
 
 
 # возраст, с которого человек считается совершеннолетним
@@ -394,16 +453,39 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=Fals
         typ = cell_str(c.get('Тип документа')).upper()
         cat = cell_str(c.get('Категория')).lower()
         ls = cell_str(c.get('Лицевой счёт'))
+        # ответчик заявления (ставит импорт «Портянки»): у одного лицевого
+        # счёта плательщиков несколько, у каждого своя сумма долга, поэтому
+        # на каждого — отдельный документ
+        resp_names = [x.strip() for x in cell_str(c.get('Ответчик (из портянки)')).split(';')
+                      if x.strip()]
+        # должник умер (в справке Ф-9 «выписан по смерти») — документ подаётся
+        # на неизвестных наследников умершего
+        dead_note = cell_str(c.get('Ответчик умер'))
         if typ not in ('СП', 'ИСК'):
             err(f'Заявление {n} (строка {row}): тип документа «{typ or "не указан"}» — укажите СП или ИСК.')
         if cat not in ('наниматель', 'собственник'):
             err(f'Заявление {n} (строка {row}): категория «{cat or "не указана"}» — укажите наниматель или собственник.')
         if not ls:
             err(f'Заявление {n} (строка {row}): не указан лицевой счёт.')
-        elif ls in seen_ls:
-            err(f'Заявление {n} (строка {row}: ЛС {ls}) повторяет строку {seen_ls[ls]} — лицевой счёт используется в двух заявлениях, разберитесь до формирования.')
         else:
-            seen_ls[ls] = row
+            # в ключ входит и период задолженности: один и тот же ответчик по
+            # одному лицевому счёту может быть заявлен дважды — за разные
+            # периоды (это два разных требования, а не дубль строки)
+            per = (cell_str(c.get('Долг: с')), cell_str(c.get('Долг: по')))
+            ls_key = (ls, per, tuple(sorted(resp_names))) if resp_names else (ls, per)
+            if ls_key in seen_ls:
+                per_txt = f'{per[0]}–{per[1]}' if per[0] or per[1] else 'без периода'
+                if resp_names:
+                    err(f'Заявление {n} (строка {row}: ЛС {ls}, ответчик {", ".join(resp_names)}, '
+                        f'период {per_txt}) повторяет строку {seen_ls[ls_key]} — тот же ответчик по '
+                        'этому лицевому счёту за тот же период заявлен дважды, разберитесь до '
+                        'формирования.')
+                else:
+                    err(f'Заявление {n} (строка {row}: ЛС {ls}, период {per_txt}) повторяет строку '
+                        f'{seen_ls[ls_key]} — лицевой счёт используется в двух заявлениях, разберитесь '
+                        'до формирования.')
+            else:
+                seen_ls[ls_key] = row
         if not cell_str(c.get('Суд (шапка)')):
             if auto_court:
                 warnings.append(f'Заявление {n} (строка {row}): суд не указан — будет определён '
@@ -467,14 +549,22 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=Fals
             if ent.get('graph'):
                 graphs += [g.strip() for g in str(ent['graph']).split(';') if g.strip()]
         graphs = list(dict.fromkeys(graphs))
-        sp_graph_mode = typ == 'СП' and bool(graphs)
-        isk_graph_mode = typ == 'ИСК' and bool(graphs)
+        # если в заявлении указан ответчик (из портянки) — документ собирается
+        # на него одного, без разделения по графе Ф-9
+        sp_graph_mode = typ == 'СП' and bool(graphs) and not resp_names
+        isk_graph_mode = typ == 'ИСК' and bool(graphs) and not resp_names
         if sp_graph_mode and len(graphs) > 1:
             warnings.append(f'Заявление {n} (ЛС {ls}): {len(graphs)} лиц(а) в графе Ф-9 — '
                             'судебный приказ формируется ОТДЕЛЬНО на каждого.')
         if isk_graph_mode:
             warnings.append(f'Заявление {n} (ЛС {ls}): из Ф-9 взяты собственник/наниматель '
                             '(графа) и совершеннолетние зарегистрированные — одним иском.')
+        if resp_names and len(graphs) > 1:
+            others = [g for g in graphs if not any(same_fio(g, rn) for rn in resp_names)]
+            if others:
+                warnings.append(f'Заявление {n} (ЛС {ls}): в графе Ф-9 ещё лица ('
+                                + ', '.join(others) + ') — документ собран только на ответчика '
+                                + ', '.join(resp_names) + '; по остальным заявлений нет.')
         graph_keys = {fio_key(g) for g in graphs}
 
         # должники по ЛС
@@ -488,60 +578,116 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=Fals
                 err(f'Заявление {n} (строка {row}): по ЛС «{ls}» на листе «Должники» нет ни одной записи.')
         persons = []
         fios = set()
+        found_resp = set()
         for dd in dlist:
             fio = re.sub(r'\s+', ' ', cell_str(dd.get('ФИО полностью')))
             pol = cell_str(dd.get('Пол')).lower()[:1]
             fem = pol == 'ж' or (pol != 'м' and looks_female(fio)) if fio else False
             graph_mode = sp_graph_mode or isk_graph_mode
-            used = not graph_mode or fio_key(fio) in graph_keys
+            # ответчик заявления (из портянки) — только он и входит в документ
+            is_resp = bool(resp_names) and any(same_fio(fio, rn) for rn in resp_names)
+            if is_resp:
+                used = True
+            else:
+                used = not graph_mode or fio_key(fio) in graph_keys
+            if resp_names and fio and not is_resp:
+                continue        # в документ по этому заявлению входит только ответчик
             if not fio:
                 err(f'Лист «Должники», строка {dd["_row"]}: пустое ФИО (ЛС «{ls}»).')
-            elif len(fio.split()) < 3 and used:
-                err(f'Лист «Должники», строка {dd["_row"]}: ФИО «{fio}» — должно быть «Фамилия Имя Отчество». Краткое ФИО строится автоматически, оно должно быть точным.')
-            elif not FIO_RE.fullmatch(fio) and used:
+                continue
+            if len(fio.split()) < 3 and used:
+                # «Фамилия Имя» без отчества — бывает в справках Пример
+                # («Петров Пётр»), а вот «Фамилия И.О.» — неполные данные:
+                # их надо дописать (лицо ищется по фамилии и инициалам)
+                if FIO2_RE.fullmatch(fio):
+                    warnings.append(f'Лист «Должники», строка {dd["_row"]}: у «{fio}» нет отчества — '
+                                    'в документе будет так же, проверьте.')
+                elif FIO_INIT_RE.fullmatch(fio):
+                    # «Фамилия И.О.» — так в самой «Портянке» (ответчик из
+                    # портянки). Заявление не отбрасываем: документ собираем
+                    # с этим именем, юрист дописывает отчество вручную.
+                    warnings.append(f'Заявление {n} (ЛС {ls}): у ответчика «{fio}» только инициалы '
+                                    '— в документе будет так же, допишите отчество вручную '
+                                    'на листе «Должники» до подачи.')
+                else:
+                    err(f'Лист «Должники», строка {dd["_row"]}: ФИО «{fio}» — должно быть «Фамилия Имя Отчество». Краткое ФИО строится автоматически, оно должно быть точным.')
+                    continue
+            if not (FIO_RE.fullmatch(fio) or FIO2_RE.fullmatch(fio)
+                    or FIO_INIT_RE.fullmatch(fio)) and used:
                 err(f'Лист «Должники», строка {dd["_row"]}: странные символы или регистр в ФИО «{fio}» (пример: Иванов Иван Иванович).')
-            else:
-                if CYR.search(fio) and LAT.search(fio):
-                    warnings.append(f'Лист «Должники», строка {dd["_row"]}: в ФИО «{fio}» смешаны русские и латинские буквы — проверьте.')
-                dr = parse_date(dd.get('Дата рождения'))
-                if dr is None:
-                    # где искать: в справке Ф-9 по этому ЛС (страница) или в самой справке
-                    src = ''
-                    for ent in (f9 or {}).get(ls, []):
-                        if ent.get('text') and fio.split()[0][:4].lower() in ent['text'].lower():
-                            src = f' (см. справку Ф-9, стр. {ent.get("page") or "?"})'
-                            break
-                    msg = (f'Лист «Должники», строка {dd["_row"]}: не распознана дата рождения '
-                           f'«{dd.get("Дата рождения")}» (формат ДД.ММ.ГГГГ)'
-                           + (f'; ЛС {ls}{src}' if ls else '') + '.')
-                    if not graph_mode or used:
-                        err(msg)
-                    else:
-                        warnings.append(f'ЛС {ls}: у «{fio}» нет даты рождения, но лицо не входит '
-                                        f'в {typ} (по графе Ф-9) — на сбор не влияет.')
-                if (dr is not None and age_years(dr) < MINOR_AGE
-                        and fio_key(fio) not in graph_keys):
-                    # несовершеннолетний, зарегистрированный в квартире, в судебный
-                    # документ не включается (в книге «Должники» строка остаётся)
-                    warnings.append(f'ЛС {ls}: исключён из документа (несовершеннолетний, '
-                                    f'{age_years(dr)} лет): {fio}, {dr.strftime("%d.%m.%Y")}.')
-                    continue
-                person = {'fio': fio, 'fem': fem, 'dr': dr,
-                          'place': cell_str(dd.get('Место рождения')),
-                          'pasport': cell_str(dd.get('Паспорт (кем и когда выдан)'))}
-                if fio in fios:
-                    # одна и та же строка приходит и из портянки, и из таблицы Ф-9 —
-                    # одну запись дополняем недостающими данными второй, в документе не дублируем
-                    warnings.append(f'Заявление {n}: должник «{fio}» указан в лицевом счёте дважды — строки объединены.')
-                    dup = persons[-1] if persons and persons[-1]['fio'] == fio else \
-                        next((q for q in reversed(persons) if q['fio'] == fio), None)
-                    if dup:
-                        for kk, vv in person.items():
-                            if not dup.get(kk) and vv:
-                                dup[kk] = vv
-                    continue
-                fios.add(fio)
-                persons.append(person)
+                continue
+            if CYR.search(fio) and LAT.search(fio):
+                warnings.append(f'Лист «Должники», строка {dd["_row"]}: в ФИО «{fio}» смешаны русские и латинские буквы — проверьте.')
+            dr = parse_date(dd.get('Дата рождения'))
+            if dr is None:
+                # где искать: в справке Ф-9 по этому ЛС (страница) или в самой справке
+                src = ''
+                for ent in (f9 or {}).get(ls, []):
+                    if ent.get('text') and fio.split()[0][:4].lower() in ent['text'].lower():
+                        src = f' (см. справку Ф-9, стр. {ent.get("page") or "?"})'
+                        break
+                msg = (f'Лист «Должники», строка {dd["_row"]}: не распознана дата рождения '
+                       f'«{dd.get("Дата рождения")}» (формат ДД.ММ.ГГГГ)'
+                       + (f'; ЛС {ls}{src}' if ls else '') + '.')
+                if is_resp:
+                    # ответчик заявления: без даты рождения документ всё равно
+                    # собираем — иначе требование вообще выпадает из пакета.
+                    # Дата нужна для заполнения, юрист дописывает её вручную;
+                    # в отчёте и реестре такой документ помечен.
+                    warnings.append(f'Заявление {n} (ЛС {ls}): у ответчика «{fio}» нет даты '
+                                    'рождения — документ собран без неё, впишите дату вручную '
+                                    'на листе «Должники» до подачи.')
+                elif used or (not graph_mode and not resp_names):
+                    err(msg)
+                else:
+                    warnings.append(f'ЛС {ls}: у «{fio}» нет даты рождения, но лицо не входит '
+                                    f'в {typ} — на сбор не влияет.')
+            if (dr is not None and age_years(dr) < MINOR_AGE
+                    and fio_key(fio) not in graph_keys and not is_resp):
+                # несовершеннолетний, зарегистрированный в квартире, в судебный
+                # документ не включается (в книге «Должники» строка остаётся)
+                warnings.append(f'ЛС {ls}: исключён из документа (несовершеннолетний, '
+                                f'{age_years(dr)} лет): {fio}, {dr.strftime("%d.%m.%Y")}.')
+                continue
+            if is_resp and dr is not None and age_years(dr) < MINOR_AGE:
+                warnings.append(f'Заявление {n} (ЛС {ls}): ответчик — несовершеннолетний '
+                                f'({age_years(dr)} лет, {dr.strftime("%d.%m.%Y")}) — включён '
+                                'по данным портянки, проверьте.')
+            person = {'fio': fio, 'fem': fem, 'dr': dr,
+                      'place': cell_str(dd.get('Место рождения')),
+                      'pasport': cell_str(dd.get('Паспорт (кем и когда выдан)'))}
+            if is_resp and dr is None:
+                # у ответчика нет даты рождения — документ собирается без неё,
+                # но в реестре и отчёте он помечен как требующий дополнения
+                person['no_dr'] = True
+            if is_resp and dead_note:
+                # умерший должник: документ — на неизвестных наследников
+                person['deceased'] = True
+                person['deceased_fio'] = fio
+                person['deceased_note'] = dead_note
+                person['fio'] = heirs_name(fio)
+            if fio in fios:
+                # одна и та же строка приходит и из портянки, и из таблицы Ф-9 —
+                # одну запись дополняем недостающими данными второй, в документе не дублируем
+                warnings.append(f'Заявление {n}: должник «{fio}» указан в лицевом счёте дважды — строки объединены.')
+                dup = persons[-1] if persons and persons[-1]['fio'] == fio else \
+                    next((q for q in reversed(persons) if q['fio'] == fio), None)
+                if dup:
+                    for kk, vv in person.items():
+                        if not dup.get(kk) and vv:
+                            dup[kk] = vv
+                continue
+            fios.add(fio)
+            persons.append(person)
+            if is_resp:
+                found_resp.add(fio_key(fio))
+        if resp_names:
+            missing = [rn for rn in resp_names
+                       if not any(same_fio(rn, q.get('deceased_fio') or q['fio']) for q in persons)]
+            if missing:
+                err(f'Заявление {n} (строка {row}): ответчик «{", ".join(missing)}» не найден '
+                    'на листе «Должники» — впишите его (лицевой счёт, ФИО полностью, дата '
+                    'рождения, паспорт) и перезапустите сбор.')
         base = {'num': n, 'row': row, 'typ': typ, 'cat': cat, 'ls': ls,
                 'sud': cell_str(c.get('Суд (шапка)')).split('\n'),
                 'addr': clean_addr(cell_str(c.get('Адрес регистрации'))),
@@ -679,10 +825,18 @@ def apply_jurisdiction(docs, cfg, warnings):
         # --- почтовый индекс в адрес ответчика ---
         if idx_on:
             idx = str(res.get('postal_code') or '')
+            level = str(res.get('index_level') or '')
+            src = 'по ФИАС (ГАС «Правосудие»)'
+            if not idx and postrf_index is not None:
+                # ГАС «Правосудие» не ответил или не нашёл — берём индекс
+                # с сайта «Почты России» (тот же справочник ФИАС, открытый доступ)
+                idx2, level2, note2 = postrf_index.postal_code(addr)
+                if idx2:
+                    idx, level, src = idx2, level2, note2
             if idx and not sudrf_lookup.has_index(addr):
                 c['addr'] = sudrf_lookup.add_index(addr, idx)
                 warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): в адрес добавлен почтовый '
-                                f'индекс {idx} ({res.get("index_level") or "по ФИАС"}).')
+                                f'индекс {idx} ({level or "—"}, {src}).')
             elif not idx and not res.get('service_down'):
                 warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): почтовый индекс по адресу '
                                 f'«{addr}» не найден — в адрес он не вставлен.')
@@ -803,8 +957,8 @@ RUKOVODSTVO = {
 
 def prishu_text(c, vz):
     # в приказе — «на имя <родительный>», в иске — «Взыскать с <творительный>»
-    shorts = ', '.join(fio_short(p['fio'], p['fem'],
-                                 'gen' if c['typ'] == 'СП' else 'ins') for p in c['persons'])
+    shorts = ', '.join(person_short(p, 'gen' if c['typ'] == 'СП' else 'ins')
+                       for p in c['persons'])
     dolg = sum_words(c['dolg'])
     posh = sum_words(c['poshlina'])
     period = f'за период с {fmt_date(c["d1"])} по {fmt_date(c["d2"])} года'
@@ -847,7 +1001,12 @@ def attachments(c, vz, cfg):
 
 
 def person_line(p):
-    bits = [f'{fmt_date(p["dr"])} г.р.']
+    if p.get('dr'):
+        bits = [f'{fmt_date(p["dr"])} г.р.']
+    else:
+        # даты рождения нет — документ всё равно собран (требование не
+        # должно выпадать), но в тексте это видно и требует дополнения
+        bits = ['дата рождения не установлена']
     if p['place'] and p['pasport']:
         bits.append(f'ур. {p["place"]}, паспорт: {p["pasport"]}')
     elif p['place']:
@@ -917,7 +1076,7 @@ def bank_lines(cfg):
     """Строки банковских реквизитов без задвоенных подписей.
 
     Значения в настройках бывают двух видов: голые («407028…») и с подписью
-    («р/с 407028… к/с 301018…», «БИК 044030861 ИНН … КПП …»). Возвращает готовые
+    («р/с 407028… к/с 301018…», «БИК 044000000 ИНН … КПП …»). Возвращает готовые
     строки шапки — без дублей и без лишних пустых."""
     out = []
     bank = strip_label(cfg.get('банк'))
@@ -1090,7 +1249,7 @@ def main():
     for di, c in enumerate(docs, 1):
         print(f'[{di}/{len(docs)}] собираю документ № {c["num"]}…', flush=True)
         try:
-            shorts = fio_nom_short(c['persons'][0]['fio'])
+            shorts = person_short_nom(c['persons'][0])
             fname = f'{c["num"]} {FORM_WORD[c["typ"]]} {c["cat"]} {shorts} ЛС {c["ls"]}'
             if c.get('parts', 1) > 1:
                 fname += f' часть {c["part"]} из {c["parts"]}'
@@ -1099,11 +1258,13 @@ def main():
             build_docx(c, cfg, out_dir / fname)
             print(f'[{di}/{len(docs)}] собрано: {fname}', flush=True)
             rows.append([c['num'], fname, FORM_WORD[c['typ']], c['cat'], c['ls'],
-                         '; '.join(fio_nom_short(p['fio']) for p in c['persons']), c['addr'],
+                         '; '.join(person_short_nom(p) for p in c['persons']), c['addr'],
                          fmt_date(c['d1']), fmt_date(c['d2']), c['dolg'],
                          fmt_date(c['p1']), fmt_date(c['p2']), c['peni'],
                          c['dolg'] + c['peni'], c['poshlina'],
-                         ' / '.join(map(str, c['sud']))])
+                         ' / '.join(map(str, c['sud'])),
+                         'дата рождения ответчика не установлена — вписать вручную'
+                         if any(p.get('no_dr') for p in c['persons']) else ''])
             ok += 1
         except Exception as ex:  # noqa: BLE001
             failed += 1
@@ -1118,19 +1279,24 @@ def main():
     heads = ['№', 'Файл', 'Форма документа', 'Статус ответчиков', 'Лицевой счёт',
              'Ответчики (Фамилия И.О.)', 'Адрес',
              'Долг: с', 'Долг: по', 'Долг, руб.', 'Пени: с', 'Пени: по', 'Пени, руб.',
-             'Цена иска, руб.', 'Госпошлина, руб.', 'Суд']
+             'Цена иска, руб.', 'Госпошлина, руб.', 'Суд', 'Требует дополнения']
     ws.append(heads)
     for r in rows:
         ws.append(r)
     sums_row = ['ИТОГО', '', '', '', '', '', '', '', '',
                 sum(r[9] for r in rows), '', '', sum(r[12] for r in rows),
-                sum(r[13] for r in rows), sum(r[14] for r in rows), '']
+                sum(r[13] for r in rows), sum(r[14] for r in rows), '', '']
     ws.append(sums_row)
-    for j, w in enumerate((5, 40, 6, 12, 12, 35, 35, 11, 11, 12, 11, 11, 12, 14, 14, 30), 1):
+    for j, w in enumerate((5, 40, 6, 12, 12, 35, 35, 11, 11, 12, 11, 11, 12, 14, 14, 30, 42), 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = w
     for cell in ws[1]:
         cell.font = openpyxl.styles.Font(bold=True)
     wb.save(out_dir / 'registry.xlsx')
+    need = [r for r in rows if len(r) > 16 and r[16]]
+    if need:
+        report.append(f'ТРЕБУЮТ ДОПОЛНЕНИЯ ({len(need)}): у ответчика нет даты рождения — '
+                      'заявления № ' + ', '.join(str(r[0]) for r in need)
+                      + '. Впишите дату на листе «Должники» и пересоберите документы.')
     report.append(f'Сформировано документов: {ok} в папку: {out_dir}')
 
     text = '\n'.join(report)

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import platform_utils
+import features
 
 import tkinter as tk
 from tkinter import messagebox, filedialog, font as tkfont
@@ -973,8 +974,19 @@ SECTION_INFO = {
          'Создайте исковое заявление с требованиями и расчётами.')),
 }
 
+# Флаги разделов (файл features.json рядом с программой).
+# None — раздел включается всегда.
+SECTION_FLAGS = {
+    'РАЗДЕЛ ЖКУ': None,
+    'СЕМЕЙНОЕ ПРАВО': 'семейное_право',
+    'ЗАЩИТА ПРАВ ПОТРЕБИТЕЛЯ': 'защита_прав_потребителя',
+}
+
 
 def create_section(title, rows, default_open=False, word='таблица', books=BOOKS_JKU):
+    flag = SECTION_FLAGS.get(title)
+    if flag and not features.enabled(flag):
+        return None, None          # раздел выключен флагом — не показываем
     display, description, details = SECTION_INFO[title]
     entry = {'state': {'open': False}, 'markers': []}
 
@@ -1058,6 +1070,7 @@ jku_rows = [
          'Данные импортированы. Дочистите таблицу (лист «Сверка импорта»), затем «Собрать документы».',
          ('ЛС распознаётся автоматически из текста каждой справки: один скан со многими справками — не проблема.',
           'Справки привязываются к своим ЛС (лист «Ф-9 справки» в книге) — в документ они не вставляются, их прикладывают вручную.',
+          'Если в имени PDF есть лицевой счёт («6200001.pdf», «01_Иванов Иван Иванович_6200001.pdf») — справка привяжется сразу, без распознавания рукописи.',
           'Если автопривязка не удалась: впишите ЛС в «f9-index.xlsx» и повторите загрузку.'),
          on_done=step_hook(jku_steps, 0)),
      PRIMARY),
@@ -1123,10 +1136,11 @@ potr_steps.extend(c for _, c, _ in potr_rows)
 create_section('ЗАЩИТА ПРАВ ПОТРЕБИТЕЛЯ', potr_rows, default_open=False,
                word='анкета потребителя', books=BOOKS_POTR)
 
-contracts_nav = Button(tab_row, text='Договоры  ↗', font=mid, bg=SIDEBAR, fg=MUTED,
-                       activebackground=SURFACE, anchor='w', width=0,
-                       cursor='hand2', padx=14, pady=13, command=окно_договоров)
-contracts_nav.pack(fill='x', pady=3)
+if features.enabled('договоры'):
+    contracts_nav = Button(tab_row, text='Договоры  ↗', font=mid, bg=SIDEBAR, fg=MUTED,
+                           activebackground=SURFACE, anchor='w', width=0,
+                           cursor='hand2', padx=14, pady=13, command=окно_договоров)
+    contracts_nav.pack(fill='x', pady=3)
 
 
 root.mainloop()

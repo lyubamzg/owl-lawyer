@@ -69,6 +69,7 @@ Source: "packaging\windows\setup-dependencies.ps1"; Flags: dontcopy
 Source: "packaging\windows\requirements.txt"; Flags: dontcopy
 Source: "packaging\windows\dependency-manifest.json"; Flags: dontcopy
 Source: "app\*.py"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "app\features.json"; DestDir: "{app}\app"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "app\icons\*.png"; DestDir: "{app}\app\icons"; Flags: ignoreversion
 Source: "app\input-workbook.xlsx"; DestDir: "{app}\app"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "app\demo-housing.xlsx"; DestDir: "{app}\app"; Flags: onlyifdoesntexist uninsneveruninstall

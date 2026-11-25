@@ -18,7 +18,8 @@
 автоматически по цифрам в первых строках OCR каждой страницы (затем по словам
 «лицевой счёт/л/с» в тексте) и справки привязываются к своим ЛС
 (лист «Ф-9 справки» в книге). Запасной способ: ЛС в имени файла
-(«Ф-9 ЛС000000101.pdf») или вручную в «f9-index.xlsx».
+(«Ф-9 ЛС6200002.pdf», «01_Иванов Иван Иванович_6200001.pdf» —
+берётся любая группа из 6–12 цифр в имени) или вручную в «f9-index.xlsx».
 
 Результат: «housing-input.xlsx»:
   листы Заявления и Должники заполнены, лист «Сверка импорта» — что проверить.
@@ -78,18 +79,27 @@ def age_at(dr, on=None):
     on = on or date.today()
     return on.year - d.year - ((on.month, on.day) < (d.month, d.day))
 PASPORT_RE = re.compile(r'(?<![\d.])((?:4|8)\d{3})\s?,?\s?(\d{6})(?!\d)')
-# лицевой счёт, написанный ВНУТРИ справки: «лицевой счёт № 000000101», «л/с 000000101»
+# лицевой счёт, написанный ВНУТРИ справки: «лицевой счёт № 6200002», «л/с 6200002»
 # допустимы пробелы/дефисы/точки внутри номера: «065 005 800», «065-005-800»
 LS_TEXT_RE = re.compile(
     r'(?:лицев[а-яё]+\s*сч[еёт]+[а-яё]*|л\s*/\s*с\s*сч[еёт]+[а-яё]*|л\s*/\s*с|лс|кл\.\s*сч[еёт]+[а-яё]*)'
     r'\s*(?:№|#|:)?\s*((?:[0-9][\s\-._]{0,2}){5,11}[0-9])',
     re.IGNORECASE)
 
-# фамилия (возможно с maiden в скобках) + «Имя Отчество(ович и т.п.)» или «И.Г.»
+# фамилия (возможно с maiden в скобках) + «Имя Отчество(ович и т.п.)» или «И.Г.»;
+# третья ветвь — «Фамилия Имя» без отчества в таблице Пример («Петров Пётр - сын…»)
 PERSON_RE = re.compile(
     r'([А-ЯЁ][а-яё\-]+(?:\s*\([^()\n]{1,40}\))?)\s+'
     r'(?:([А-ЯЁ][а-яё\-]{2,})\s+([А-ЯЁ][а-яё\-]{2,}(?:ович|евич|овна|евна|ична|инична))'
-    r'|([А-ЯЁ])\s?\.[\s,]?([А-ЯЁ])\.?)')
+    r'|([А-ЯЁ])\s?\.[\s,]?([А-ЯЁ])\.?'
+    r'|(?:([А-ЯЁ][а-яё\-]{2,})(?=\s+[-–—]\s)))')
+# ФИО в портянке: инициалы могут быть без точек («Иванова А Ш»)
+PORT_PERSON_RE = re.compile(
+    r'([А-ЯЁ][а-яё\-]+(?:\s*\([^()\n]{1,40}\))?)\s+'
+    r'(?:([А-ЯЁ][а-яё\-]{2,})\s+([А-ЯЁ][а-яё\-]{2,}(?:ович|евич|овна|евна|ична|инична))'
+    r'|([А-ЯЁ])\s*\.?\s*([А-ЯЁ])\.?)')
+# «Фамилия Имя» без отчества — в портянке («Петров Пётр»)
+PERSON2_RE = re.compile(r'([А-ЯЁ][а-яё\-]+)\s+([А-ЯЁ][а-яё\-]{2,})\s*$')
 MINOR_RE = re.compile(r'в\s+инт\.?\s*(.*)$', re.IGNORECASE)
 # для графы «собственник(и) являются / и/или наниматель»: фамилия в ЛЮБОМ регистре
 # (OCR часто пишет со строчной: «у басильева Ж.П»), инициалы или полное ФИО
@@ -113,20 +123,30 @@ def fio_candidates(raw):
         minors_ctx = 'в инт. ' + m.group(1).strip(' ,;.')
         raw = raw[:m.start()].strip(' ,;.,')
     persons = []
-    for m in PERSON_RE.finditer(raw):
+    for m in PORT_PERSON_RE.finditer(raw):
         surname = re.sub(r'\s+', ' ', m.group(1))
         if m.group(2):
             persons.append({'surname': surname,
                             'init': m.group(2)[0] + m.group(3)[0], 'full': f'{surname} {m.group(2)} {m.group(3)}'})
-        else:
+        elif m.group(4):
             persons.append({'surname': surname,
                             'init': m.group(4) + m.group(5), 'full': None})
+    if not persons:
+        # «Фамилия Имя» без отчества («Петров Пётр»)
+        m = PERSON2_RE.search(raw)
+        if m:
+            persons.append({'surname': m.group(1),
+                            'init': m.group(2)[0].lower(),
+                            'full': f'{m.group(1)} {m.group(2)}'})
     return persons, minors_ctx
 
 
 def parse_period(raw):
     s = str(raw or '').replace('пот', 'по')
     m = re.search(r'(\d{2}[.,]\d{2}[.,]\d{4})\s*по\s*(\d{2}[.,]\d{2}[.,]\d{4})', s, re.IGNORECASE)
+    if not m:
+        # в портянке встречается период без слова «по»: «01.03.2024 31.10.2026»
+        m = re.search(r'(\d{2}[.,]\d{2}[.,]\d{4})\s*[-–—]?\s*(\d{2}[.,]\d{2}[.,]\d{4})', s)
     if not m:
         return None, None, f'не удалось разобрать период: «{str(raw).strip()}»'
     d1, d2 = parse_date(m.group(1)), parse_date(m.group(2))
@@ -314,46 +334,167 @@ def gost_sum(cena, gp):
     return 0.0
 
 
+def _pkey(p):
+    """Ключ лица: (фамилия без скобок в нижнем регистре, инициалы)."""
+    fam = re.sub(r'\s*\([^)]*\)', '', str(p.get('surname') or '')).strip().lower()
+    return (fam, str(p.get('init') or '?'))
+
+
+def _same_person(a, b):
+    """Одно ли это лицо: те же инициалы и похожие фамилии.
+
+    В портянке фамилию иногда пишут с опечаткой («Иванова» вместо «Иванова»,
+    «Образцова» вместо «Образцов»), а в справке Ф-9 — точно. Инициалы при
+    этом совпадают, поэтому лица надо связать, а не заводить второго должника.
+    """
+    fa, ia = fio_norm(a)
+    fb, ib = fio_norm(b)
+    if not fa or not fb or not ia or not ib or ia != ib:
+        return False
+    if fa == fb:
+        return True
+    return difflib.SequenceMatcher(None, fa, fb).ratio() >= 0.72
+
+
+FIO_PATRONYMIC_RE = re.compile(r'(?:ович|евич|овна|евна|ична|инична)$')
+
+
+def _fio_is_clean(name):
+    """Похоже ли ФИО на настоящее, а не на мусор распознавания.
+
+    Нормальное ФИО — «Фамилия Имя Отчество», и отчество кончается на
+    «-ович/-евна». Мусор OCR вида «Файздрахманрвна» такого окончания не имеет.
+    """
+    parts = re.split(r'\s+', str(name or '').strip())
+    if len(parts) < 3:
+        return False
+    return bool(FIO_PATRONYMIC_RE.search(parts[2].lower()))
+
+
+def _prefer_name(f9_name, port_name):
+    """Какое написание ФИО взять в документ.
+
+    Справку Ф-9 выдаёт паспортная служба — её написание верное; написание
+    портянки берём, только если в справке имя испорчено распознаванием.
+    """
+    if not port_name:
+        return f9_name
+    if not f9_name:
+        return port_name
+    return f9_name if _fio_is_clean(f9_name) else port_name
+
+
+DEATH_RE = re.compile(r'(?i)выписан[аи]?\s+по\s+смерти\s*[,.]?\s*(\d{2}[.,]\d{2}[.,]\d{4})?')
+
+
+def f9_subject_death(text):
+    """Справка Ф-9 выдана на умершего: (ФИО субъекта, примечание).
+
+    Форма АО «Тепловые сети»: «Выдана гр. Фамилия Имя Отчество (УМЕР 28.09.2024) …».
+    Форма Пример: «Гр. Фамилия Имя Отчество … снят с регистрации: Выписан по смерти, 31.03.2022».
+    """
+    text = str(text or '')
+    # 1) «Тепловые сети»: пометка о смерти в шапке справки
+    hm = re.search(
+        r'Выдана\s+гр[а-яё.]*\s+([А-ЯЁ][^\n(]{3,70}?)[\s(]*\(?\s*умер\w*\s*'
+        r'(\d{2}[.,]\d{2}[.,]\d{4})?', text, re.IGNORECASE)
+    if hm:
+        fio = re.sub(r'\s+', ' ', hm.group(1)).strip()
+        fio = re.sub(r'\s*\d{2}[.,]\d{2}[.,]\d{4}.*$', '', fio).strip()
+        date = hm.group(2) or ''
+        return fio, (f'умер {date}' if date else 'умер(ла)')
+    # 2) Пример: «Выписан по смерти» — в шапке, до таблицы регистраций
+    m = DEATH_RE.search(text)
+    if not m:
+        return '', ''
+    head = text[:m.start()]
+    fio = ''
+    hm = re.search(r'Гр\.?\s+([А-ЯЁ][^\n]{3,80})', head)
+    if hm:
+        fio = re.sub(r'\s+', ' ', hm.group(1)).strip()
+        fio = re.sub(r'\s*\d{2}[.,]\d{2}[.,]\d{4}.*$', '', fio).strip()
+    date = m.group(1) or ''
+    return fio, (f'выписан по смерти {date}' if date else 'выписан по смерти')
+
+
+def _fmt_fio(name):
+    """«Иванов ВЛ» → «Иванов В.Л.» (короткое ФИО с точками)."""
+    parts = re.split(r'\s+', str(name or '').strip())
+    if len(parts) == 2 and len(parts[1]) == 2 and parts[1].isupper():
+        return f'{parts[0]} {parts[1][0]}.{parts[1][1]}.'
+    return name
+
+
+def match_person(name, names, soft=True):
+    """Найти в списке имён то, что относится к тому же человеку.
+
+    1) фамилия с инициалами (в фамилии бывает опечатка);
+    2) имя с отчеством — фамилия изменилась (у женщин — при замужестве:
+       в портянке «Трофимова В.А.», в справке Ф-9 «Завгородняя В.А.»).
+
+    Возвращает (найденное имя, как совпали).
+    """
+    for nm in names:
+        if nm and _same_person(name, nm):
+            return nm, 'фамилия'
+    if soft:
+        for nm in names:
+            if nm and name_score_soft(name, nm) >= 0.9:
+                return nm, 'имя и отчество'
+    return '', ''
+
+
+def claim_respondents(g, f9_persons, warn):
+    """Ответчик заявления — плательщик из строки портянки.
+
+    ФИО берём из справки Ф-9 (её выдала паспортная служба): в портянке
+    фамилии и имена иногда пишут с опечаткой. Если написание разошлось —
+    предупреждение в отчёт, юрист проверяет.
+    """
+    out = []
+    for p in g['persons']:
+        nm = p.get('full') or f"{p.get('surname')} {p.get('init')}"
+        found, way = match_person(nm, [q.get('fio') or '' for q in f9_persons])
+        if found:
+            better = _prefer_name(found, nm)
+            if better != nm:
+                warn.append(f'ЛС {g["ls"]}: в портянке «{nm}», в справке Ф-9 «{found}» — '
+                            f'в документ взято «{better}» (совпадение по {way}), проверьте.')
+            nm = better
+        out.append(_fmt_fio(nm))
+    return out
+
+
 def collect_groups(items, warn):
-    """Объединяем строки портянки по (Тип, ЛС) в одно заявление."""
+    """Строки портянки → заявления: по одному заявлению на плательщика.
+
+    В «Портянке» один лицевой счёт — это несколько плательщиков (собственники
+    с долями), и у каждого своя сумма долга. Раньше строки с одним ЛС
+    объединялись в одно заявление: сумма терялась, а документов выходило
+    меньше, чем людей. Теперь на каждого плательщика — своё заявление
+    (и свой документ): столько же, сколько людей в «Портянке».
+
+    У одного плательщика бывает НЕСКОЛЬКО требований (разные периоды
+    задолженности) — это разные документы, поэтому в ключ заявления входят
+    ещё и период и суммы. Совпадение по всему ключу = дубль строки.
+    """
     groups = {}
     warns = []
     for it in items:
-        key = (it['typ'], it['ls'])
-        g = groups.setdefault(key, {'rows': [], 'it': it})
+        key = (it['typ'], it['ls'], tuple(sorted(_pkey(p) for p in it['persons'])),
+               it['d1'], it['d2'], it['dolg'], it['peni'])
+        g = groups.setdefault(key, {'rows': []})
         g['rows'].append(it)
     out = []
-    for (typ, ls), g in groups.items():
+    for (typ, ls, _pk, _d1, _d2, _dolg, _peni), g in groups.items():
         rows = g['rows']
         base = rows[0]
-        seen, merged = {}, []
-        for r in rows:
+        merged = [{**p, 'rows_seen': {base['row']}} for p in base['persons']]
+        for r in rows[1:]:
             for p in r['persons']:
-                key = (re.sub(r'\s+', ' ', p['surname']).lower(), p['init'])
-                if key in seen:
-                    seen[key]['rows_seen'].add(r['row'])
-                    continue
-                seen[key] = {**p, 'rows_seen': {r['row']}}
-                merged.append(seen[key])
-        # похожие фамилии при ОДИНАКОВЫХ инициалах — варианты одного лица:
-        # «Иванов (Примерова) И.Г.» и «Иванова (Примерова) И.Г.» склеиваются,
-        # а «Крылов Г.Н.» и «Крылов А.Г.» (разные инициалы) остаются раздельно
-        # похожие фамилии при ОДИНАКОВЫХ инициалах — варианты одного лица:
-        # «Иванов (Примерова) И.Г.» и «Иванова (Примерова) И.Г.» склеиваются,
-        # а «Крылов Г.Н.» и «Крылов А.Г.» (разные инициалы) остаются раздельно
-        core = lambda s: re.sub(r'\s*\([^)]*\)', '', s).strip().lower()
-        for i, a in enumerate(merged):
-            for b in merged[i + 1:]:
-                sa, sb = core(a['surname']), core(b['surname'])
-                similar = sa != sb and (sb.startswith(sa) or sa.startswith(sb))
-                if similar and a['init'] == b['init']:
-                    keep, drop = (a, b) if a['full'] else (b, a)
-                    keep['rows_seen'] |= drop['rows_seen']
-                    drop['drop'] = True
-                elif similar and (a['init'] == '?' or b['init'] == '?'):
-                    warns.append(f'ЛС {ls}: похожие фамилии с неполными ФИО («{a["surname"]}» / '
-                                 f'«{b["surname"]}») — возможно, одно лицо, проверьте.')
-        merged = [m for m in merged if not m.get('drop')]
+                for m in merged:
+                    if _pkey(m) == _pkey(p):
+                        m['rows_seen'].add(r['row'])
         # лица из строк про несовершеннолетних («в инт. ...») — помечаются
         for m in merged:
             for r in rows:
@@ -365,7 +506,6 @@ def collect_groups(items, warn):
         if len(base_dolg) > 1:
             warn.append(f'ЛС {ls}: разные суммы долга в строках портянки '
                         f'({", ".join(str(x) for x in sorted(base_dolg))}) — проверьте!')
-        d2_all = {r['d2'] for r in rows if r['d2'] is not None}
         minors_all = [r['minors_text'] for r in rows if r['minors_text']]
         out.append({'typ': typ, 'typ_raw': base.get('typ_raw', ''), 'ls': ls, 'persons': merged,
                     'minors_text': '; '.join(minors_all),
@@ -373,13 +513,42 @@ def collect_groups(items, warn):
                     'd2': base['d2'], 'dolg': sorted(base_dolg)[0] if base_dolg else None,
                     'peni': sorted(base_peni)[0] if base_peni else None,
                     'gp': sorted(base_gp)[0] if base_gp else None,
-                    'nrows': len(rows)})
+                    'nrows': len(rows),
+                    'rows': [r['row'] for r in rows]})
         if not base_dolg and not base_peni:
             warn.append(f'ЛС {ls}: суммы долга и пени пустые/нулевые — заявление, '
                         'возможно, не нужно. Проверьте.')
-        if len(rows) > 1:
-            warn.append(f'ЛС {ls}: в портянке {len(rows)} строк с одним ЛС — '
-                        'объединены в одно заявление (двоение исключено).')
+    # в одном лицевом счёте один и тот же человек может быть написан по-разному
+    # («Иванов (Девичья) И.Г.» и «Иванова (Девичья) И.Г.») — такие заявления
+    # склеиваем, чтобы не подать на одного человека дважды
+    by_ls = {}
+    for g in out:
+        by_ls.setdefault((g['typ'], g['ls']), []).append(g)
+    for (typ, ls), gs in by_ls.items():
+        for i, a in enumerate(gs):
+            for b in gs[i + 1:]:
+                if len(a['persons']) != 1 or len(b['persons']) != 1:
+                    continue
+                na = a['persons'][0].get('full') or a['persons'][0]['surname']
+                nb = b['persons'][0].get('full') or b['persons'][0]['surname']
+                if not _same_person(na, nb):
+                    continue
+                if a['d1'] != b['d1'] or a['d2'] != b['d2']:
+                    # одно лицо, но разные периоды задолженности — это разные
+                    # требования и разные документы
+                    warns.append(f'ЛС {ls}: «{na}» — два требования за разные периоды '
+                                 f'({a["d1"]}–{a["d2"]} и {b["d1"]}–{b["d2"]}), собраны отдельно.')
+                    continue
+                if a['dolg'] != b['dolg'] or a['peni'] != b['peni']:
+                    warns.append(f'ЛС {ls}: у «{na}» за один период две разные суммы — '
+                                 'собраны отдельными документами, проверьте.')
+                    continue
+                keep, drop = (a, b) if a['persons'][0].get('full') else (b, a)
+                keep['rows'] = sorted(set(keep['rows']) | set(drop['rows']))
+                keep['persons'][0]['rows_seen'] |= drop['persons'][0]['rows_seen']
+                drop['drop'] = True
+                warns.append(f'ЛС {ls}: «{na}» и «{nb}» — одно лицо, заявления объединены.')
+    out = [g for g in out if not g.get('drop')]
     warn.extend(warns)
     return out
 
@@ -494,13 +663,22 @@ def ocr_pdf(path: Path, tmpdir: Path):
         print(f'· страница {n} распознана', flush=True)
     merged = []
     for n, t in pages:
-        if merged and not re.search(r'Выдана\s+гр', t):
+        if merged and not F9_PAGE_START_RE.search(t):
             m = merged[-1]
             merged[-1] = (m[0], m[1] + '\n' + t)
         else:
             merged.append((n, t))
     return merged
 
+
+# Начало НОВОЙ справки на странице: шапка «Выдана гр. …» (АО «Тепловые сети»)
+# или шапка Пример «Гр. Фамилия Имя Отчество …». Без этого все страницы сводного
+# PDF склеивались в одну справку и ни одна не привязывалась к своему ЛС.
+# Перед «Гр.» бывает мусор от OCR («\/ Гр. Иванов …»), поэтому шапка ищется
+# не с начала строки, а внутри неё.
+F9_PAGE_START_RE = re.compile(
+    r'Выдана\s+гр|Гр\.?\s+[А-ЯЁ][а-яё\-]{2,}\s+[А-ЯЁ][а-яё\-]{2,}',
+    re.IGNORECASE)
 
 # ФИО в шапке справки: фамилия + имя + отчество (или «И.О.»)
 F9_FIO_RE = re.compile(
@@ -511,9 +689,9 @@ F9_FIO_RE = re.compile(
 F9_DR_RE = re.compile(
     r'Выдана\s+гр[а-яё.]*\s*([^\n]{0,140}?)'
     r'(\d{2}[.,]\d{2}[.,]\d{4})[^\n]{0,20}?рожден', re.IGNORECASE)
-# адрес в справке: «в доме № 38, кв.№ 16, корпус № , по улице Тестовое ш., г. Пример»
+# адрес в справке: «в доме № 38, кв.№ 16, корпус № , по улице Московское ш., г. Пример»
 F9_ADDR_RE = re.compile(
-    r'в\s*д\s*оме\s*№?\s*\.?\s*(\d{1,4})'          # дом
+    r'в\s*д\s*оме\s*№?\s*\.?\s*(\d{1,4}(?:[а-яА-Я](?!в[.\s]))?)'   # дом (с буквой: 29А)
     r'[^|\n]{0,45}?к\.?\s*в?\.?\s*№?\s*\.?\s*(\d{1,4})'  # квартира
     r'[^|\n]{0,45}?(?:по|то|во)\s+улице\s*([^|\n]{2,45})',  # улица
     re.IGNORECASE)
@@ -544,11 +722,11 @@ def parse_f9_addr(text):
 
 # ------------------------------------------------------------ адрес ----
 # Адрес в справках Ф-9 записан по-разному:
-#   МГА:            «по адресу: п. Пример, Тестовая д. 33 кв. 107; к. 2»
+#   Пример:            «по адресу: п. Старая Малукса, Новоселов д. 33 кв. 107; к. 2»
 #                   «в доме принадлежащем: Муниципальный фонд (Примерское поселение)»
 #   АО «Тепловые сети»: в шапке «Примерная область»,
-#                   «в доме № 27, кв.№ 63, корпус № ,по улице Тестовое ш., г. Пример»
-#                   «в принадлежащем Примерское городское поселение»
+#                   «в доме № 27, кв.№ 63, корпус № ,по улице Московское ш., г. Пример»
+#                   «в принадлежащем Тосненское городское поселение»
 # В документ адрес собирается ТОЛЬКО из этих строк: область, район (МО),
 # населённый пункт, улица, дом, корпус (если есть), квартира.
 # Ничего не додумывается: выдуманные «Примерная область, Примерный район»
@@ -565,18 +743,33 @@ F9_PRINADLEZH_RE = re.compile(r'принадлежащем[:\s]*(.+)$', re.IGNOR
 # субъект РФ в шапке: «Примерная область», «Примерная област» (опечатка OCR)
 F9_OBLAST_RE = re.compile(
     r'^([А-ЯЁ][а-яё\-]*(?:\s+[А-ЯЁ][а-яё\-]*)*\s+(?:облас\w*|обл\.?|край))$')
-# адресный кусок: «п. Пример», «г. Пример», «Тестовая»
+# адресный кусок: «п. Старая Малукса», «г. Пример», «Новоселов»
 NP_RE = re.compile(
     r'^((?:г|гп|пгт|с|д|пос|п|ст)\.?\s*)?'
     r'([А-ЯЁ][а-яё\-]*(?:\s+[А-ЯЁ][а-яё\-]*){0,2})$')
-# улица: «по улице Тестовое ш.», «ул. Ленина»
+# улица: «по улице Московское ш.», «ул. Ленина», «Шоссе Революции»
 UL_RE = re.compile(
     r'^(?:по\s+|то\s+|во\s+)?'
-    r'(?:улице|улица|ул\.?|проспект\w*|просп\.?|пер(?:еулок)?|бул(?:ьвар)?|'
-    r'шоссе|ш\.?|наб\.?|пр-т|пр\.?д\.?|мкр\.?|проезд\w*)\s+(.+)$',
+    r'((?:улице|улица|ул\.?|проспект\w*|просп\.?|пер(?:еулок)?|бул(?:ьвар)?|'
+    r'шоссе|ш\.?|наб\.?|пр-т|пр\.?д\.?|мкр\.?|проезд\w*)\s+)(.+)$',
     re.IGNORECASE)
+
+# короткая запись типа улицы: «улице» → «ул.», «шоссе» → «шоссе»
+STREET_TYPE_SHORT = {
+    'улице': 'ул.', 'улица': 'ул.', 'ул': 'ул.',
+    'проспект': 'просп.', 'просп': 'просп.', 'пер': 'пер.', 'переулок': 'пер.',
+    'бул': 'бул.', 'бульвар': 'бул.', 'шоссе': 'Шоссе', 'ш': 'ш.',
+    'наб': 'наб.', 'пр-т': 'пр-т', 'пр-д': 'пр-д', 'мкр': 'мкр.',
+    'проезд': 'проезд',
+}
+
+
+def _street_type(word):
+    """Тип улицы из адреса — короткой записью («по улице» → «ул.»)."""
+    w = str(word or '').strip().lower().rstrip('.')
+    return STREET_TYPE_SHORT.get(w, w + '.')
 # дом: «в доме № 27», «д. 33»
-DOM_RE = re.compile(r'(?<![а-яё])(?:в\s*)?(?:дом(?:е)?|д)\s*№?\s*\.?\s*(\d{1,4})',
+DOM_RE = re.compile(r'(?<![а-яё])(?:в\s*)?(?:дом(?:е)?|д)\s*№?\s*\.?\s*(\d{1,4}(?:[а-яА-Я](?!в[.\s]))?)',
                      re.IGNORECASE)
 # квартира: «кв. 107», «кв.№6» (только «кв.» — иначе «к. 3» не квартира)
 KV_RE = re.compile(r'(?<![а-яё])кв\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
@@ -584,7 +777,7 @@ KV_RE = re.compile(r'(?<![а-яё])кв\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNOREC
 KV_ALT_RE = re.compile(r'(?<![а-яё])кв\.?\s*№?\s*\.?\s*([а-яё])', re.IGNORECASE)
 # корпус: «корпус № 2», «корп. 2»
 KORPUS_RE = re.compile(r'корп(?:ус)?\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
-# корпус у МГА записан одной буквой: «кв. 107; к. 2» (OCR иногда теряет точку: «к1»)
+# корпус у Пример записан одной буквой: «кв. 107; к. 2» (OCR иногда теряет точку: «к1»)
 KORPUS_SHORT_RE = re.compile(r'(?<![а-яё])к\.?\s*№?\s*\.?\s*(\d{1,4})', re.IGNORECASE)
 # OCR путает цифры с буквами: «кв. б» — это кв. 6
 OCR_DIGIT = {'б': '6', 'з': '3', 'ч': '4', 'о': '0', 'и': '1', 'д': '2'}
@@ -593,7 +786,7 @@ OCR_DIGIT = {'б': '6', 'з': '3', 'ч': '4', 'о': '0', 'и': '1', 'д': '2'}
 def _addr_part(s):
     """Кусок адреса без мусора OCR: лишние пробелы, кавычки, запятые по краям.
 
-    Точки внутри не трогаем: «г. Пример», «Тестовое ш.», «д. 33» — точки
+    Точки внутри не трогаем: «г. Пример», «Московское ш.», «д. 33» — точки
     в названиях значащие.
     """
     s = re.sub(r'\s+', ' ', str(s or '')).strip(' ,;‚\'"')
@@ -606,6 +799,8 @@ def _norm_oblast(v):
     v = _addr_part(v)
     v = re.sub(r'\s+обл\.?$', ' область', v, flags=re.IGNORECASE)
     v = re.sub(r'\s+облас\w*$', ' область', v, flags=re.IGNORECASE)
+    # OCR путает «Л» и «П»: «Примерная область» → «Примерная область»
+    v = re.sub(r'^Примерная', 'Примерная', v)
     return v
 
 
@@ -619,12 +814,12 @@ TENURE_ROLE_RE = re.compile(
 # основание «наниматель»: жилой ордер администрации, договор найма
 TENURE_RENT_RE = re.compile(
     r'(жилой\s+ордер|ордер\s+обменный|ордер\s+администрации|орд\w*\s+администраци|'
-    r'ордер\s*№|дер\s*:\s*обменн|обменн\w*\s*№|горисполком|'
+    r'ордер\s+служебн|ордер\s*№|дер\s*:\s*обменн|обменн\w*\s*№|горисполком|'
     r'социального\s+найма|договор\s+найма)', re.IGNORECASE)
 # основание «собственник»: договор купли-продажи, приватизация, передача в
 # собственность, свидетельство о наследстве, выписка из ЕГРН, доля
 TENURE_OWN_RE = re.compile(
-    r'(договор\s+купли[- ]продаж|купли[- ]продаж|приватиз|'
+    r'(договор\s+купли[- ]продаж|купли[- ]продаж|\bдкп\b|приватиз|'
     r'передач[аие][^\n]{0,60}?собственност|наследств\w*|завещани|'
     r'праве\s+на\s+на[сз]ледств|свидетельств\w*\s+о\s+праве|егрн|доля\s*:|'
     r'[а-яё]{0,8}нник\s*:|уфрс)', re.IGNORECASE)
@@ -723,7 +918,7 @@ def parse_addr_parts(raw):
 
     Куски разделяются запятыми/точками с запятой, но внутри куска дом,
     квартира и корпус могут стоять рядом с названием улицы
-    («Тестовая д. 33 кв. 107») — поэтому они вырезаются из куска,
+    («Новоселов д. 33 кв. 107») — поэтому они вырезаются из куска,
     а остаток считается улицей или населённым пунктом.
     """
     out = {k: '' for k in ADDR_KEYS}
@@ -758,7 +953,7 @@ def parse_addr_parts(raw):
             continue
         m = UL_RE.match(rest)
         if m:
-            out['ul'] = _addr_part(m.group(1))
+            out['ul'] = _addr_part(_street_type(m.group(1)) + ' ' + m.group(2))
             continue
         if F9_OBLAST_RE.match(rest):
             out['oblast'] = _norm_oblast(rest)
@@ -775,7 +970,7 @@ def parse_addr_parts(raw):
                 out['np'] = f'{prefix} {name}'.strip() if prefix else name
             continue
         # остаток без подписи: если населённого пункта ещё нет — это он,
-        # иначе — название улицы (в адресе МГА порядок: нп, затем улица)
+        # иначе — название улицы (в адресе Пример порядок: нп, затем улица)
         if not re.match(r'^[А-ЯЁ]', rest):
             continue                     # «корпус №», обрывки цифр — не адрес
         if not out['np']:
@@ -794,7 +989,7 @@ def parse_f9_addr_parts(text):
     """Справка Ф-9 → компоненты адреса {oblast, rayon, np, ul, dom, korpus, kv}.
 
     Область — из шапки справки, район (муниципальное образование) — из строки
-    «в принадлежащем …» (у МГА она в скобках: «Муниципальный фонд (Примерское
+    «в принадлежащем …» (у Пример она в скобках: «Муниципальный фонд (Примерское
     поселение)»), остальное — из адресной строки.
     """
     out = {k: '' for k in ADDR_KEYS}
@@ -820,6 +1015,12 @@ def parse_f9_addr_parts(text):
     block = ' , '.join(lines[i] for i in addr_lines[:2])
     if block:
         parts = parse_addr_parts(block)
+        # «кв. 5; к.2 ,3» — это НЕ корпус, а номера комнат коммунальной
+        # квартиры («в 6 комнатной коммунальной квартире»). Корпус в адресе
+        # Пример идёт перед «кв.» («д. 13 к. 2 кв. 21»).
+        if parts.get('korpus') and re.search(
+                r'кв\.?\s*\d[^,\n]{0,10}[;,]\s*к\.?\s*\d+\s*,\s*\d', block, re.IGNORECASE):
+            parts['korpus'] = ''
         for k, v in parts.items():
             if v and not out[k]:
                 out[k] = v
@@ -833,13 +1034,25 @@ def fmt_addr(parts):
         out.append(parts['oblast'])
     if parts.get('rayon'):
         out.append(parts['rayon'])
-    if parts.get('np'):
-        out.append(parts['np'])
+    np_txt = parts.get('np')
+    ul = ''
     if parts.get('ul'):
         ul = re.sub(r'\.{2,}', '.', parts['ul'])
         ul = re.sub(r'[\[\]()]+$', '', ul).strip(' ,;')
+        ul = re.sub(r'^ул\.\s*', '', ul, flags=re.IGNORECASE)
+        # «пос. …», «с. …» — это НАСЕЛЁННЫЙ ПУНКТ, а не улица: с адресом
+        # «ул. пос. …» не находятся ни почтовый индекс, ни подсудность
+        # (ГАС «Правосудие»)
+        ms = re.match(r'^(пос|с|д|ст)\.\s*(.+)$', ul, re.IGNORECASE)
+        if ms and not np_txt:
+            np_txt = f'{ms.group(1)}. {ms.group(2).strip()}'
+            ul = ''
+    if np_txt:
+        out.append(np_txt)
+    if ul:
         if not re.match(r'^(?:ул|улица|просп|пр\.|пер|бул|шоссе|ш\.|наб|пр-т|проезд)',
-                        ul, re.IGNORECASE):
+                        ul, re.IGNORECASE) and not re.search(r'\b(?:пр|просп|пер|бул|ш|наб|тракт)\.$',
+                                                             ul, re.IGNORECASE):
             ul = f'ул. {ul}'
         out.append(ul)
     if parts.get('dom'):
@@ -887,7 +1100,7 @@ ORG_SURNAME_RE = re.compile(
     r'^(адм|администраци\w*|му|мо|гу|пиб|уфрс|куми|предприяти\w*|обществ\w*|'
     r'ооо|зао|оао|пао|дк|домоуправлени\w*|управляющ\w*|фонд|'
     r'муниципальн\w*|региональн\w*|областн\w*)$')
-# «Гр. Фамилия Имя Отчество» — шапка справки МГА (в форме АО «Тепловые сети»
+# «Гр. Фамилия Имя Отчество» — шапка справки Пример (в форме АО «Тепловые сети»
 # шапка другая — «Выдана гр. … года рождения», её разбирает parse_f9_birth)
 MGA_HEADER_RE = re.compile(r'Гр\.?\s+')
 # конец строки-человека: дальше идёт блок «основание» (договор, ордер,
@@ -905,9 +1118,10 @@ ROLE_PREFIX_RE = re.compile(
 JUNK_PLACE_RE = re.compile(
     r'(Мать|Отчец|Брат|Сестра|Сын|Дочь|Внук|Внучка|Правнук|Примечание|'
     r'Племян|Невестк|Зять|Тесть|Теща|Шурин|Деверь|Св[её]кор|Пасынок|Пасынка|'
+    r'Муж|Жена|Дяд[ья]|Т[её]тя|Ответственн\w*\s+лиц\w*|'
     r'не\s+указано|'
     r'Собственник|Квартиросъемщик|Квартиросъёмщик|Наниматель|доля|'
-    r'Паспортист|Страница|отношен|Родственн|выдан|Регистрац)', re.IGNORECASE)
+    r'Паспортист|Страница|отношен|Родственн|выдан|Регистрац|регистриров)', re.IGNORECASE)
 
 
 def _line_bounds(text, pos):
@@ -920,7 +1134,7 @@ def _line_bounds(text, pos):
 
 
 def parse_f9_header(text):
-    """Шапка справки МГА «Гр. Фамилия Имя Отчество … дд.мм.гггг г.р.».
+    """Шапка справки Пример «Гр. Фамилия Имя Отчество … дд.мм.гггг г.р.».
 
     Возвращает (ФИО полностью, дата рождения). Дата может стоять на следующей
     строке — тогда она всё равно попадает в «до 120 символов» после имени.
@@ -1026,14 +1240,14 @@ def parse_f9(text):
     if fio:
         w = fio.split()
         add(w[0], w[1][0] + w[2][0] if len(w) >= 3 else '?', fio, dr=dr)
-    # шапка справки МГА: «Гр. Фамилия Имя Отчество … г.р.» — тот же жилец,
-    # но в форме МГА нет слов «Выдана гр.», и OCR часто калечит отчество
+    # шапка справки Пример: «Гр. Фамилия Имя Отчество … г.р.» — тот же жилец,
+    # но в форме Пример нет слов «Выдана гр.», и OCR часто калечит отчество
     if not fio and not re.search(r'Выдана\s+гр', text, re.IGNORECASE):
         fio, dr = parse_f9_header(text)
         if fio:
             w = fio.split()
             if not dr:
-                # в форме МГА дата рождения помечена «гр.»; если в шапке её нет
+                # в форме Пример дата рождения помечена «гр.»; если в шапке её нет
                 # (OCR разнёс её по странице: «Гр. Фамилия Имя Отчество» …
                 # «14.01.2006 гр.»), берём дату с такой пометкой
                 mg = re.search(r'(\d{2}[.,]\d{2}[.,]\d{4})\s*г\s*\.?\s*р', text, re.IGNORECASE)
@@ -1101,7 +1315,7 @@ def parse_f9(text):
         place = re.sub(r'\s+', ' ', after[:place_to]).strip(' ,;.')
         if re.search(r'регистрац|Год|Фамилия|постоянно|временно', place, re.IGNORECASE):
             place = ''
-        # в форме МГА после ФИО идёт графа «родственные отношения», а не место
+        # в форме Пример после ФИО идёт графа «родственные отношения», а не место
         # рождения («_ Мать», «Сын») — такое в «Место рождения» попадать не должно
         if JUNK_PLACE_RE.search(place):
             place = ''
@@ -1128,8 +1342,12 @@ def parse_f9(text):
         if m.group(2):
             add(surname, m.group(2)[0] + m.group(3)[0], f'{surname} {m.group(2)} {m.group(3)}',
                 dr, place, pp, kem)
-        else:
+        elif m.group(4):
             add(surname, m.group(4) + m.group(5), None, dr, place, pp, kem)
+        elif m.group(6):
+            # «Фамилия Имя» без отчества («Петров Пётр - сын падчерицы»)
+            add(surname, m.group(6)[0].lower(), f'{surname} {m.group(6)}',
+                dr, place, pp, kem)
     return list(persons.values())
 
 
@@ -1194,6 +1412,166 @@ def parse_f9_graph(text, page_keys=()):
 
 def fam_cap(x):
     return re.sub(r'\s+', ' ', x).strip().capitalize()
+
+
+# бланк Пример: роль плательщика прямо в строке — «Собственник: ФИО»,
+# «Квартиросъемщик: ФИО» (у формы Пример нет графы «собственником является»)
+MGA_ROLE_RE = re.compile(
+    r'(?i)([а-яё]{0,12}с[ъь]?[её]мщ[ие][кйе]|с?обственник)\s*:?\s*([^\n]{2,80})')
+
+
+def parse_f9_graph_mga(text):
+    """Бланк Пример: строки «Собственник: ФИО» / «Квартиросъемщик: ФИО» → [«Фамилия И.О.»].
+
+    Роль в бланке Пример названа прямо, поэтому сверять с таблицей регистраций
+    не нужно: собственник может и не быть зарегистрирован в квартире.
+    """
+    out = []
+    for line in str(text or '').splitlines():
+        m = MGA_ROLE_RE.search(line)
+        if not m:
+            continue
+        rest = m.group(2).strip()
+        if not rest or JUNK_GRAPH_RE.search(rest):
+            continue
+        for pm in GRAPH_RE.finditer(rest):
+            if pm.group(4) and pm.group(5):
+                out.append(f'{fam_cap(pm.group(1))} {pm.group(4)[0]}.{pm.group(5)[0]}.')
+            elif pm.group(2) and pm.group(3):
+                out.append(f'{fam_cap(pm.group(1))} {pm.group(2)}.{pm.group(3)}.')
+    seen, res = set(), []
+    for x in out:
+        if x.lower() not in seen:
+            seen.add(x.lower())
+            res.append(x)
+    return res[:8]
+
+
+# ------------------------------- бланк управляющей организации (без графы) ----
+# В справке этого бланка НЕТ графы «собственник и/или наниматель»: роль
+# названа словами «собственником является», «ответственным съемщиком
+# является», «нанимателем является», а сведения о лицах — в графе
+# «Примечание». Там же написаны дата рождения и паспорт тех, кого нет
+# в таблице регистраций, — оттуда берём недостающие данные.
+TOSNO_ROLE_RE = re.compile(
+    r'(собственником\s+является|ответственным\s+съемщиком\s+является|'
+    r'нанимателем\s+является|квартиросъемщиком\s+является)', re.IGNORECASE)
+NOTE_MARK_RE = re.compile(r'Примечание\s*:', re.IGNORECASE)
+BOILER_RE = re.compile(r'Директор\s+Филиал|Паспортист', re.IGNORECASE)
+# «Фамилия Имя Отчество» либо «Фамилия И.О.» (точки у инициалов OCR теряет)
+TOSNO_FIO_RE = re.compile(
+    r'[А-ЯЁ][а-яё]{2,}(?:\-[А-ЯЁ][а-яё]{2,})*\s+[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,})?(?![\wЁё])'
+    r'|[А-ЯЁ][а-яё\-]{2,}\s+[А-ЯЁ]\.?\s?[А-ЯЁ]\.?(?![\wЁё])')
+DATE_ANY_RE = re.compile(r'\b(\d{2})\.(\d{2})\.(\d{4})\b')
+# паспорт РФ: «4115 710511», «41 14 630883»
+PAS_ANY_RE = re.compile(r'\b\d{2}\s?\d{2}\s?\d{6}\b|\b\d{4}\s?\d{3}\s?\d{3}\b')
+# признак того, что рядом с датой стоят паспортные данные, а не дата рождения
+PASSPORT_MARK_RE = re.compile(
+    r'(паспорт|\bовд\b|\bоуфмс\b|\bуфмс\b|\bмвд\b|\bтп\b|выдан|выд\.|\bг\.\s*р\.)',
+    re.IGNORECASE)
+
+
+def _tosno_notes_zone(text):
+    """Часть справки, где названы лица: от «собственником является» до
+    служебной части бланка («Директор Филиала …», «Паспортист …»)."""
+    t = str(text or '')
+    m = TOSNO_ROLE_RE.search(t)
+    if m:
+        zone = t[m.end():]
+    else:
+        mn = NOTE_MARK_RE.search(t)
+        if not mn:
+            return ''
+        zone = t[mn.end():]
+    mb = BOILER_RE.search(zone)
+    if mb:
+        zone = zone[:mb.start()]
+    return zone
+
+
+def _dr_from_tosno_chunk(chunk):
+    """Дата рождения из куска текста, где назван человек.
+
+    Надёжный признак — «г.р.»: дата стоит прямо перед ним («25.08.1964 г.р.»).
+    Если «г.р.» нет, берём первую дату, перед которой в куске нет признаков
+    паспорта: «10.10.1957,г.Лысково,…,4102 812022» — это дата рождения, а
+    «4114 645912 ТП 137 ОУФМС в Тосн.р-не 05.11.2014» — дата выдачи паспорта.
+    """
+    c = str(chunk or '')
+    m = re.search(r'г\.\s*р\.?', c[:80])
+    if m:
+        found = list(DATE_ANY_RE.finditer(c[:m.start()]))
+        if found:
+            return found[-1].group(0)
+    for d in DATE_ANY_RE.finditer(c):
+        before = c[max(0, d.start() - 60):d.start()]
+        if PASSPORT_MARK_RE.search(before):
+            continue
+        if PAS_ANY_RE.search(c[max(0, d.start() - 16):d.end()]):
+            continue
+        return d.group(0)
+    return ''
+
+
+def parse_f9_notes_tosno(text):
+    """Графа «Примечание» и строка «собственником является …» бланка
+    бланка управляющей организации → [{'fio', 'dr', 'pasport'}].
+
+    Нужна, чтобы узнать дату рождения и паспорт собственников-дольщиков:
+    их нет в таблице регистраций, и без них документ не собирается.
+    """
+    zone = _tosno_notes_zone(text)
+    if not zone:
+        return []
+    zone = re.sub(r'\([^)]*\)', ' ', zone)     # «Фамилия(девичья) Имя Отчество»
+    zone = re.sub(r'[ \t]+', ' ', zone)
+    # границы: «Примечание» и нумерация пунктов («1. », «2. ») — за ними
+    # начинаются сведения о другом человеке
+    bounds = set(m.start() for m in NOTE_MARK_RE.finditer(zone))
+    for m in re.finditer(r'(?:^|(?<=\s))\d{1,2}\s*[.;:]\s+(?=[А-ЯЁа-яёA-Za-z`\'«])', zone):
+        bounds.add(m.start())
+    bounds = sorted(bounds)
+    names = list(TOSNO_FIO_RE.finditer(zone))
+    out = []
+    for i, m in enumerate(names):
+        name = re.sub(r'\s+', ' ', m.group(0)).strip(' .,;:-')
+        if len(name.split()) < 2:
+            continue
+        end = len(zone)
+        for b in bounds:
+            if b > m.end():
+                end = min(end, b)
+                break
+        if i + 1 < len(names):
+            end = min(end, names[i + 1].start())
+        end = min(end, m.end() + 200)
+        chunk = zone[m.end():end]
+        pas = PAS_ANY_RE.search(chunk)
+        out.append({'fio': name,
+                    'dr': _dr_from_tosno_chunk(chunk),
+                    'pasport': pas.group(0) if pas else ''})
+    return out
+
+
+def notes_for_person(name, notes):
+    """Данные из «Примечания» для конкретного человека (по фамилии и
+    инициалам). Несколько совпадений объединяются: дата и паспорт могут
+    быть в разных строках (полное ФИО и «Фамилия И.О.»)."""
+    fam, inits = fio_norm(name)
+    if not fam:
+        return {}
+    merged = {}
+    for nt in notes or []:
+        nfam, ninits = fio_norm(nt.get('fio'))
+        if nfam != fam:
+            continue
+        if inits and ninits and inits[:2] != ninits[:2]:
+            continue
+        if not merged.get('dr') and nt.get('dr'):
+            merged['dr'] = nt['dr']
+        if not merged.get('pasport') and nt.get('pasport'):
+            merged['pasport'] = nt['pasport']
+    return merged
 
 
 def load_f9_index():
@@ -1286,13 +1664,15 @@ def best_ls_match(blob, known):
 
 def fio_norm(s):
     """ФИО → (фамилия, инициалы) в сравнимом виде: нижний регистр, ё→е, без скобок."""
-    s = str(s or '').lower().replace('ё', 'е')
-    s = re.sub(r'\s*\([^)]*\)', ' ', s)
-    parts = [p for p in re.split(r'[\s,]+', s) if p]
+    raw = re.sub(r'\s*\([^)]*\)', ' ', str(s or ''))
+    # отбрасываем «н-го», «м-ей» ДО нижнего регистра: иначе срежется и
+    # инициал «М.М.» (после lower() «м.м.» тоже похоже на «м-ей»)
+    parts = [re.sub(r'^(н|м|ж)[\-.](?=[а-яё])', '', p)
+             for p in re.split(r'[\s,]+', raw) if p]
+    parts = [p.lower().replace('ё', 'е') for p in parts]
     parts = [p for p in parts
              if p not in ('в', 'инт', 'н', 'за', 'и', 'или', 'все', 'их', 'проживающий',
                           'совместно', 'с', 'гражданином', 'гражданиномкой', 'проживающими')]
-    parts = [re.sub(r'^(н|м|ж)[\-.]', '', p) for p in parts]   # «н-го», «м-ей»
     if not parts:
         return '', ''
     fam = parts[0]
@@ -1301,8 +1681,35 @@ def fio_norm(s):
         t = tok.replace('.', '')
         if not t:
             continue
-        inits += t if (len(t) <= 3 and t.isalpha() and t.islower()) else t[0]
+        if len(t) <= 3 and t.isalpha() and (t.islower() or t.isupper()):
+            inits += t.lower()      # инициалы: «пс», «ПС», «П.С.»
+        else:
+            inits += t[0].lower()
     return fam, inits
+
+
+def fio_parts(s):
+    """ФИО → (фамилия, имя, отчество) в сравнимом виде."""
+    raw = re.sub(r'\s*\([^)]*\)', ' ', str(s or ''))
+    parts = [p.lower().replace('ё', 'е') for p in re.split(r'[\s,]+', raw) if p]
+    parts = [re.sub(r'^(н|м|ж)[\-.](?=[а-яё])', '', p) for p in parts]
+    while len(parts) < 3:
+        parts.append('')
+    return parts[0], parts[1], parts[2]
+
+
+def name_score_soft(fio_a, fio_b):
+    """Совпали имя и отчество (фамилия другая — бывшая/замужняя).
+
+    Возвращает 0.95 — почти полное совпадение личности; иначе 0.
+    """
+    fa, na, pa = fio_parts(fio_a)
+    fb, nb, pb = fio_parts(fio_b)
+    if not (na and nb and pa and pb):
+        return 0.0
+    if na[0] == nb[0] and pa[0] == pb[0]:
+        return 0.95
+    return 0.0
 
 
 def name_score(fio_a, fio_b):
@@ -1328,6 +1735,8 @@ def name_score(fio_a, fio_b):
         elif len(ia) == len(ib):
             same = sum(1 for x, y in zip(ia, ib) if x == y)
             s += 0.4 * same / len(ia)
+    # имя и отчество совпали, а фамилия другая (замужество) — человек тот же
+    s = max(s, name_score_soft(fio_a, fio_b))
     return min(s, 1.0)
 
 
@@ -1335,13 +1744,24 @@ def port_addr_parts(raw):
     """Адрес портянки («Пример 2,Тестовая,д.27кв.63») → (дом, кв) без ведущих нулей."""
     s = str(raw or '')
     dom, kv = '', ''
-    m = re.search(r'д[.\s№]*(\d{1,4})', s, re.IGNORECASE)
+    m = re.search(r'д[.\s№]*(\d{1,4}(?:[а-яА-Я](?!в[.\s]))?)', s, re.IGNORECASE)
     if m:
         dom = m.group(1)
     m = re.search(r'кв[.\s№]*(\d{1,4})', s, re.IGNORECASE)
     if m:
         kv = m.group(1)
     return (dom.lstrip('0') or dom), (kv.lstrip('0') or kv)
+
+
+# OCR путает буквы и цифры в номере дома: «29Б» → «296», «29а» → «29А»
+HOUSE_DIGIT = {'б': '6', 'в': '2', 'г': '6', 'д': '2', 'е': '2', 'з': '3',
+               'и': '1', 'о': '0', 'с': '5', 'у': '4', 'ч': '4'}
+
+
+def _house_key(v):
+    """Номер дома в сравнимом виде: без регистра, с одинаковыми цифрами."""
+    s = re.sub(r'\s+', '', str(v or '')).lower()
+    return ''.join(HOUSE_DIGIT.get(ch, ch) for ch in s)
 
 
 def build_port_index(groups):
@@ -1352,14 +1772,14 @@ def build_port_index(groups):
     """
     idx = {}
     for g in groups:
+        ls = str(g.get('ls'))
         dom, kv = port_addr_parts(g.get('addr'))
-        fios = []
+        rec = idx.setdefault(ls, {'dom': dom, 'kv': kv, 'fios': [],
+                                  'addr': g.get('addr') or ''})
         for p in g.get('persons') or []:
             nm = p.get('full') or f"{p.get('surname', '')} {p.get('init', '')}".strip()
-            if nm:
-                fios.append(nm)
-        idx[str(g.get('ls'))] = {'dom': dom, 'kv': kv, 'fios': fios,
-                                 'addr': g.get('addr') or ''}
+            if nm and nm not in rec['fios']:
+                rec['fios'].append(nm)
     return idx
 
 
@@ -1375,8 +1795,10 @@ def match_page_ls(t, prs, known, known_persons, port_index=None):
       4. запасная привязка по ФИО зарегистрированных.
     """
     port_index = port_index or {}
-    # 1) угол страницы — только точное совпадение
-    head = [l.strip() for l in t.splitlines() if l.strip()][:5]
+    # 1) угол страницы — только точное совпадение.
+    # Смотрим не 5, а 12 первых строк: на бланке Пример номер пишут от руки
+    # по центру верхнего поля, и OCR кладёт его не в первую строку.
+    head = [l.strip() for l in t.splitlines() if l.strip()][:12]
     for line in head:
         line = DATE_SHORT_RE.sub(' ', line)
         for blob in sorted(ls_digit_variants(line)):
@@ -1387,16 +1809,36 @@ def match_page_ls(t, prs, known, known_persons, port_index=None):
     # 2) фамилия И адрес (основной путь)
     if port_index:
         f9_fio, _dr = parse_f9_birth(t)
+        if not f9_fio:
+            # шапка Пример: «Гр. Фамилия Имя Отчество … дд.мм.гггг г.р.»
+            f9_fio, _dr = parse_f9_header(t)
         if not f9_fio and prs:
             f9_fio = prs[0].get('fio') or ''
         dom, kv, _ul = parse_f9_addr(t)
+        if not (dom and kv):
+            # адрес Пример: «по адресу: п. Пример, Тестовая д. 1 кв. 1»
+            parts = parse_f9_addr_parts(t)
+            dom = dom or (parts.get('dom') or '')
+            kv = kv or (parts.get('kv') or '')
+        dom = (dom or '').lstrip('0') or (dom or '')
+        kv = (kv or '').lstrip('0') or (kv or '')
+        # имя ищем и в шапке справки, и среди всех жильцов: справку выдают
+        # на того, кто зарегистрирован, а плательщик в портянке может быть
+        # другим жильцом этой квартиры
+        f9_names = [x for x in ([f9_fio] + [p.get('fio') for p in (prs or [])]) if x]
         addr_ok = {}
         for ls, info in port_index.items():
-            if dom and kv and info['dom'] == dom and info['kv'] == kv:
+            if not kv or info['kv'] != kv:
+                continue
+            if dom and info['dom'] and _house_key(info['dom']) == _house_key(dom):
+                addr_ok[ls] = info
+            elif not dom:
+                # номер дома в справке не прочитан (OCR) — сверяем по квартире
                 addr_ok[ls] = info
         scored = []
         for ls, info in addr_ok.items():
-            best = max((name_score(f9_fio, f) for f in info['fios']), default=0.0)
+            best = max((name_score(nm, f) for nm in f9_names for f in info['fios']),
+                       default=0.0)
             scored.append((best, ls, info))
         # совпали и фамилия, и адрес → привязываем
         good = [x for x in scored if x[0] >= 0.55]
@@ -1408,6 +1850,17 @@ def match_page_ls(t, prs, known, known_persons, port_index=None):
             if good[0][0] > good[1][0]:
                 s, ls, info = good[0]
                 return ls, f'по фамилии и адресу (совпадение {s:.0%})', ''
+            # одинаковая оценка у нескольких счетов: адрес и человек один и тот же
+            # (в портянке у таких счетов одно и то же ФИО) — справка подходит всем
+            top = good[0][0]
+            same = [x for x in good if x[0] >= top - 0.001]
+            if len(same) > 1:
+                fio_same = all(
+                    name_score(a[2]['fios'][0], b[2]['fios'][0]) >= 0.9
+                    for a in same for b in same if a is not b) if all(x[2]['fios'] for x in same) else False
+                if fio_same:
+                    return (tuple(x[1] for x in same),
+                            'по фамилии и адресу (один адрес на несколько лицевых счетов)', '')
             return None, '', ('похожие адреса в портянке: '
                               + ', '.join(x[1] for x in good) + ' — уточните вручную')
         # не подошло ни одно — разбираем причину
@@ -1448,14 +1901,17 @@ def match_page_ls(t, prs, known, known_persons, port_index=None):
 
 
 
-F9_OCR_VERSION = '3'   # меняем, когда улучшаем распознавание — кэш пересчитается
+F9_OCR_VERSION = '4'   # меняем, когда улучшаем распознавание — кэш пересчитается
 
 
 def read_cached_pages(path):
     """Прочитать сохранённое распознавание Ф-9 (output/f9-text/*.txt).
 
-    Формат файла: сначала отметки «=== страница N ===», затем текст
-    страниц, разделённых «=== конец страницы ===».
+    Формат файла: отметка «=== страница N ===», текст страницы,
+    «=== конец страницы ===» — так для каждой страницы.
+
+    Раньше отметка «=== страница N ===» писалась только для первой страницы,
+    а остальные страницы многостраничного PDF при повторном импорте терялись.
     """
     try:
         raw = path.read_text(encoding='utf-8')
@@ -1463,17 +1919,18 @@ def read_cached_pages(path):
         return []
     if f'=== версия {F9_OCR_VERSION} ===' not in raw:
         return []   # распознавание устарело — пересчитаем
-    heads = list(re.finditer(r'=== страница (\d+) ===', raw))
-    if not heads:
-        return []
-    nums = [int(h.group(1)) for h in heads]
-    bodies = [b.strip() for b in raw[heads[-1].end():].split('=== конец страницы ===')]
-    return [(n, b) for n, b in zip(nums, bodies) if b]
+    out = []
+    for m in re.finditer(r'=== страница (\d+) ===(.*?)(?==== страница \d+ ===|\Z)',
+                         raw, re.DOTALL):
+        body = m.group(2).split('=== конец страницы ===')[0].strip()
+        if body:
+            out.append((int(m.group(1)), body))
+    return out
 
 
 def _f9_page_key(path):
-    """Порядок файлов Ф-9: страницы одной справки — по номеру («6200001.pdf»,
-    «6200001-2.pdf», …), остальные — по имени. Порядок не должен влиять на
+    """Порядок файлов Ф-9: страницы одной справки — по номеру («6200002.pdf»,
+    «6200002-2.pdf», …), остальные — по имени. Порядок не должен влиять на
     порядок лиц в справке, иначе от запуска к запуску меняются и шапка
     документа, и имя файла."""
     stem = Path(path).stem
@@ -1481,6 +1938,21 @@ def _f9_page_key(path):
     if m:
         return (m.group(1), int(m.group(2) or 0), stem)
     return (stem, 0, stem)
+
+
+def ls_from_filename(stem):
+    """Лицевой счёт из имени файла — ЛЮБАЯ группа из 6–12 цифр.
+
+    Раньше подходило только имя из одних цифр («6200003.pdf», «6200004-2.pdf»).
+    Справки часто называют по ФИО, а лицевой счёт дописывают в конец
+    («01_Иванов Иван Иванович_6200001.pdf») — такой файл тоже привязываем.
+    Короткие номера (индекс «01», номер страницы «-2») не берём.
+    """
+    m = re.search(r'ЛС\s*[:№]?\s*(\d{6,12})', stem, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    cands = re.findall(r'\d{6,12}', stem)
+    return max(cands, key=len) if cands else ''
 
 
 def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_index=None):
@@ -1515,18 +1987,26 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
             print(f'[{pi}/{total_paths}] {path.name}: распознано страниц: {len(pages)}', flush=True)
             cached.write_text(
                 f'=== версия {F9_OCR_VERSION} ===\n\n'
-                '\n\n=== страница ' + ' ===\n\n=== '.join(
-                    str(n) for n, t in pages) + ' ===\n' + '\n\n=== конец страницы ===\n\n'.join(
-                    t for n, t in pages), encoding='utf-8')
+                + ''.join(f'\n\n=== страница {n} ===\n\n{t}\n\n=== конец страницы ===\n\n'
+                          for n, t in pages), encoding='utf-8')
         else:
             print(f'[{pi}/{total_paths}] {path.name}: из сохранённого распознавания', flush=True)
         lm = re.search(r'ЛС\s*[:№]?\s*([0-9]{6,12})', path.stem, re.IGNORECASE)
         ls_name = lm.group(1) if lm else ''
         if not ls_name:
-            # в имени файла сам лицевой счёт: «6200002.pdf», «6200003-2.pdf»
+            # в имени файла сам лицевой счёт: «6200003.pdf», «6200004-2.pdf»
             # (второй лист той же справки) — привязываем по нему
             bm = re.fullmatch(r'([0-9]{6,12})(?:-\d+)?', path.stem)
             ls_name = bm.group(1) if bm else ''
+        if not ls_name:
+            # справку назвали по ФИО, а лицевой счёт дописали в конец имени:
+            # «01_Иванов Иван Иванович_6200001.pdf» — берём любые
+            # 6–12 цифр из имени
+            ls_name = ls_from_filename(path.stem)
+        if ls_name:
+            # приводим к тому виду, в каком ЛС записан в портянке
+            # (Excel теряет ведущие нули)
+            ls_name = known.get(norm_ls(ls_name), ls_name)
         if ls_name:  # ЛС в имени файла — все страницы к нему
             n_faces = 0
             for n, t in pages:
@@ -1534,7 +2014,9 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
                 n_faces += len(prs)
                 by_ls.setdefault(ls_name, []).extend(prs)
                 texts_by_ls.setdefault(ls_name, []).append(
-                    (path.name, n, t, parse_f9_graph(t, person_keys(prs)), 'по имени файла'))
+                    (path.name, n, t,
+                     parse_f9_graph(t, person_keys(prs)) or parse_f9_graph_mga(t),
+                     'по имени файла'))
             report.append(f'Ф-9 «{path.name}»: ЛС {ls_name} (из имени) → страниц: {len(pages)}, лиц: {n_faces}')
             continue
         mp = (index or {}).get(path.name.lower())
@@ -1553,7 +2035,7 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
                     how = f' ({how})'
                 else:
                     how = ''
-            graph = parse_f9_graph(t, person_keys(prs))
+            graph = parse_f9_graph(t, person_keys(prs)) or parse_f9_graph_mga(t)
             graphs_log.append((path.name, n, bool(graph)))
             dead_note = ''
             if GRAPH_MARKER_RE.search(t):
@@ -1561,9 +2043,12 @@ def load_f9_files(paths, report, warn, known_ls=(), known_persons=None, port_ind
                 if re.search(r'умер', gseg[:400], re.IGNORECASE) and not graph:
                     dead_note = '; в графе «собственник» отмечен умерший'
             if ls:
-                by_ls.setdefault(ls, []).extend(prs)
-                texts_by_ls.setdefault(ls, []).append((path.name, n, t, graph, how.strip(' ()')))
-                bound.append(f'{n} → ЛС {ls}{how}' + dead_note)
+                # справка может подходить нескольким счетам с одним адресом
+                for one in (ls if isinstance(ls, (tuple, list)) else (ls,)):
+                    by_ls.setdefault(one, []).extend(prs)
+                    texts_by_ls.setdefault(one, []).append((path.name, n, t, graph, how.strip(' ()')))
+                bound.append(f'{n} → ЛС {", ".join(ls) if isinstance(ls, (tuple, list)) else ls}'
+                             f'{how}' + dead_note)
             elif prs or graph:
                 unattached.append({'file': path.name, 'page': n, 'persons': prs,
                                    'reason': reason})
@@ -1855,7 +2340,7 @@ def addr_full(raw):
 
 
 def fix_ul_from_portyanka(parts, port_addr):
-    """OCR путает буквы в названии улицы («НовосВлов» вместо «Тестовая»).
+    """OCR путает буквы в названии улицы («НовосВлов» вместо «Новоселов»).
 
     Название улицы в портянке — из того же адреса (тот же дом и квартира),
     поэтому при близком совпадении берём написание портянки: в документ
@@ -1869,6 +2354,14 @@ def fix_ul_from_portyanka(parts, port_addr):
     a, b = parts['ul'].lower(), port['ul'].lower()
     if a == b:
         return parts, False
+    if b and b in a:
+        # портянка пишет короче («Революции» вместо «Шоссе Революции») —
+        # оставляем более полное название из справки
+        return parts, False
+    if a and a in b:
+        parts = dict(parts)
+        parts['ul'] = port['ul']
+        return parts, True
     if difflib.SequenceMatcher(None, a, b).ratio() >= 0.75:
         parts = dict(parts)
         parts['ul'] = port['ul']
@@ -1882,8 +2375,11 @@ def build_mo_index(f9_texts_norm):
     Ключи: (населённый пункт, дом) и населённый пункт. Нужны, когда OCR
     в справке не увидел строку «в доме принадлежащем: …» — тогда МО берём
     из другой справки по тому же дому (дом один, владелец один).
+    Третий ключ — область по МО: в части сканов шапка («Примерная
+    область») прочиталась плохо, и область восстанавливается по справкам
+    с тем же муниципальным образованием.
     """
-    by_dom, by_np = {}, {}
+    by_dom, by_np, by_rayon = {}, {}, {}
     for items in (f9_texts_norm or {}).values():
         for _fn, _pg, text, _graph, _how in (items or []):
             p = parse_f9_addr_parts(text)
@@ -1892,7 +2388,10 @@ def build_mo_index(f9_texts_norm):
             np_key = re.sub(r'\s+', ' ', p['np'].lower()).strip(' .,')
             by_dom.setdefault((np_key, p['dom']), p['rayon'])
             by_np.setdefault(np_key, p['rayon'])
-    return by_dom, by_np
+            if p['oblast']:
+                by_rayon.setdefault(re.sub(r'\s+', ' ', p['rayon'].lower()).strip(' .,'),
+                                    p['oblast'])
+    return by_dom, by_np, by_rayon
 
 
 def resolve_addr(group, f9_items, flags=None, mo_index=None):
@@ -1903,15 +2402,34 @@ def resolve_addr(group, f9_items, flags=None, mo_index=None):
     В flags добавляются пометки: 'нет_области', 'улица_из_портянки'.
     """
     port_addr = group.get('addr') or ''
+    port_parts = parse_addr_parts(port_addr)
     for fname, page, text, graph, how in (f9_items or []):
         parts = parse_f9_addr_parts(text)
         if not (parts['dom'] or parts['ul'] or parts['np'] or parts['kv']):
             continue
         parts, fixed = fix_ul_from_portyanka(parts, port_addr)
+        if not parts['dom'] and port_parts.get('dom') and (
+                not parts['kv'] or not port_parts.get('kv')
+                or parts['kv'] == port_parts['kv']):
+            # номер дома в справке не прочитан (ячейка бланка) — берём его из
+            # портянки: там он есть, и без него адрес в документе неполный
+            parts = dict(parts)
+            parts['dom'] = port_parts['dom']
+            if flags is not None:
+                flags.add('дом_из_портянки')
+        elif (parts['dom'] and port_parts.get('dom')
+              and parts['dom'] != port_parts['dom']
+              and _house_key(parts['dom']) == _house_key(port_parts['dom'])):
+            # OCR перепутал букву в номере дома («29Б» → «296») — написание
+            # портянки вернее, там номер перенесён из учётной системы
+            parts = dict(parts)
+            parts['dom'] = port_parts['dom']
+            if flags is not None:
+                flags.add('дом_из_портянки')
         if not parts['rayon'] and mo_index:
             # OCR не увидел «в доме принадлежащем: …» — берём МО из другой
             # справки по тому же дому (владелец у дома один)
-            by_dom, by_np = mo_index
+            by_dom, by_np, by_rayon = mo_index
             np_key = re.sub(r'\s+', ' ', parts['np'].lower()).strip(' .,')
             mo = by_dom.get((np_key, parts['dom'])) or by_np.get(np_key)
             if mo:
@@ -1919,6 +2437,16 @@ def resolve_addr(group, f9_items, flags=None, mo_index=None):
                 parts['rayon'] = mo
                 if flags is not None:
                     flags.add('мо_из_другой_справки')
+        if not parts['oblast'] and mo_index:
+            # шапка справки («Примерная область») прочиталась плохо —
+            # область берём по тому же МО из других справок
+            _bd, _bn, by_rayon = mo_index
+            ob = by_rayon.get(re.sub(r'\s+', ' ', (parts['rayon'] or '').lower()).strip(' .,'))
+            if ob:
+                parts = dict(parts)
+                parts['oblast'] = ob
+                if flags is not None:
+                    flags.add('область_из_другой_справки')
         addr = fmt_addr(parts)
         if addr:
             if flags is not None:
@@ -1946,7 +2474,11 @@ def main():
         cand = sorted({*source.glob('ledger*.xlsx'), *source.glob('Портянка*.xlsx')}) if source.exists() else []
         portyanka = cand[0] if cand else None
     if not f9_files and source.exists():
-        f9_files = sorted({*source.glob('f9*.pdf'), *source.glob('Ф-9*.pdf')})
+        f9_files = sorted({*source.glob('f9*.pdf'), *source.glob('Ф-9*.pdf'),
+                           # справки, названные по ФИО с лицевым счётом в конце:
+                           # «01_Иванов Иван Иванович_6200001.pdf»
+                           *[p for p in source.glob('*.pdf')
+                             if re.search(r'\d{6,12}', p.stem)]})
     # портянку ищем и рядом со выбранными сканами
     if portyanka is None and f9_files:
         parent = f9_files[0].parent
@@ -1983,8 +2515,19 @@ def main():
         known_persons=known_persons, port_index=build_port_index(groups))
     # тексты справок — по нормализованному ЛС (Excel теряет ведущие нули)
     f9_texts_norm = {}
-    for ls_key, items in texts_by_ls.items():
-        f9_texts_norm.setdefault(norm_ls(ls_key), []).extend(items)
+    for ls_key, f9_pages in texts_by_ls.items():
+        f9_texts_norm.setdefault(norm_ls(ls_key), []).extend(f9_pages)
+    # справки по квартирам: в одной квартире бывает несколько лицевых
+    # счетов, а справку выдают на один из них — по остальным берём её же
+    f9_items_by_flat = {}
+    for gg in groups:
+        its = f9_texts_norm.get(norm_ls(gg['ls'])) or []
+        if not its:
+            continue
+        dom, kv = port_addr_parts(gg.get('addr'))
+        if not (dom and kv):
+            continue
+        f9_items_by_flat.setdefault((dom, kv), its)
     addr_stats = {}
     addr_flags = set()
     mo_index = build_mo_index(f9_texts_norm)
@@ -2064,10 +2607,42 @@ def main():
     elif sud_common:
         report.append(f'Суд подачи (самый частый в таблице): {sud_common}')
 
+    # Плательщики портянки по лицевым счетам — из них отбирается ответчик
+    # каждого заявления (у одного счёта их несколько — у каждого своя доля).
+    port_persons_by_ls = {}
+    for it in items:
+        port_persons_by_ls.setdefault(it['ls'], []).extend(it['persons'])
+    # Даты рождения и полные ФИО по всем справкам Ф-9: один и тот же человек
+    # встречается в справках по разным счетам (квартира с несколькими лицевыми
+    # счетами) — недостающие данные берём из любой его справки.
+    dr_by_key = {}
+    full_by_key = {}
+    for _ls, prs in f9_by_ls.items():
+        for p in prs:
+            k = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
+            if p.get('dr') and k not in dr_by_key:
+                dr_by_key[k] = (p['dr'], _ls)
+            fio = str(p.get('fio') or '')
+            if len(fio.split()) >= 3 and k not in full_by_key:
+                full_by_key[k] = fio
+    debtors_done = set()
+
     for g in groups:
         n = ws_z.max_row
         ls = g['ls']
         f9_items = f9_texts_norm.get(norm_ls(g['ls'])) or []
+        # справки по этому счёту может не быть: тогда берём справку по
+        # соседнему лицевому счёту той же квартиры (в квартире несколько
+        # счетов, а справку выдают на один из них)
+        f9_sibling = False
+        if not f9_items:
+            dom, kv = port_addr_parts(g.get('addr'))
+            sib = f9_items_by_flat.get((dom, kv)) or []
+            if sib:
+                f9_items = sib
+                f9_sibling = True
+                warn.append(f'ЛС {ls}: справки Ф-9 по этому лицевому счёту нет — взята '
+                            'справка по соседнему счёту той же квартиры; проверьте ответчика.')
         # категория должника — из справки Ф-9: жилой ордер/договор найма →
         # наниматель; договор купли-продажи, приватизация, передача в
         # собственность → собственник. Категория задаёт правовое основание
@@ -2154,18 +2729,58 @@ def main():
                 warn.append(f'ЛС {ls}: суд НЕ НАЙДЕН в таблице («Справочник ЛС», прежняя книга, '
                             f'настройка «суд (шапка)») — подставлен условный суд по типу документа '
                             f'({typ}). Проверьте участок!')
+        f9 = f9_by_ls.get(g['ls'], [])
+        f9_texts = [t for _fn, _pg, t, _gr, _how in f9_items]
+        # ответчик заявления — плательщик из строки портянки (у одного
+        # лицевого счёта их несколько, у каждого своя доля долга)
+        resp = claim_respondents(g, f9, warn)
+        resp_text = '; '.join(resp)
+        # ДОЛЖНИК УМЕР. В справке Ф-9 «снят с регистрации: Выписан по смерти» —
+        # на умершего документ подавать нельзя: он подаётся на неизвестных
+        # наследников умершего (правило юриста).
+        dead_note = ''
+        for _fn, _pg, t, _gr, _how in f9_items:
+            dfio, dnote = f9_subject_death(t)
+            if not dnote:
+                continue
+            if dfio and resp and _same_person(resp[0], dfio):
+                dead_note = dnote
+                warn.append(f'ЛС {ls}: должник «{resp[0]}» скончался ({dnote}) — документ '
+                            'подаётся на неизвестных наследников умершего.')
+                break
+            if dfio and resp:
+                warn.append(f'ЛС {ls}: в справке Ф-9 скончался «{dfio}» ({dnote}), а ответчик — '
+                            f'«{resp[0]}» — проверьте, кого взыскивать.')
         ws_z.append([n, typ, cat, ls, sud, addr, housing,
                      fmt_d(sost_on(g['d2'])), fmt_d(g['d1']), fmt_d(g['d2']), g['dolg'],
-                     fmt_d(g['d1']), fmt_d(g['d2']), g['peni'], g['gp'], cena, otmena])
+                     fmt_d(g['d1']), fmt_d(g['d2']), g['peni'], g['gp'], cena, otmena, resp_text,
+                     dead_note])
         if cat_f9:
             tenure_log.append(f'ЛС {ls}: {typ} — {cat_f9} (по справке Ф-9: «{ev_f9}»)')
         n_claim += 1
 
-        f9 = f9_by_ls.get(g['ls'], [])
-        f9_texts = [t for _fn, _pg, t, _gr, _how in f9_items]
+        # «Должники» — по одному разу на лицевой счёт: зарегистрированные и
+        # собственники из справки Ф-9, плательщики из портянки и лица из графы
+        # «собственник/наниматель» (собственник может и не быть зарегистрирован).
+        if ls in debtors_done:
+            continue
+        debtors_done.add(ls)
+        for t in f9_texts:
+            dfio, dnote = f9_subject_death(t)
+            if dnote and not dfio:
+                warn.append(f'ЛС {ls}: в справке Ф-9 есть «выписан по смерти», но ФИО в шапке '
+                            'не прочиталось — проверьте ответчика вручную.')
+                break
         rows = []
         clean = lambda s: re.sub(r'\s*\([^)]*\)', '', s).lower().split()[0]
+        port_persons = port_persons_by_ls.get(ls, [])
         f9_keys = {(clean(q['fio']), q['init']) for q in f9}
+        # графа «Примечание» бланка управляющей организации: там написаны дата
+        # рождения и паспорт тех, кого нет в таблице регистраций (собственники-
+        # дольщики) — оттуда добираем недостающие данные
+        notes = []
+        for _fn, _pg, _t, _gr, _how in f9_items:
+            notes.extend(parse_f9_notes_tosno(_t))
         if f9:
             # одна справка может быть отсканирована несколькими страницами, и
             # дата рождения на них распозналась по-разному (где-то прочитали
@@ -2177,45 +2792,97 @@ def main():
                     votes.setdefault(k, {})[q['dr']] = votes.setdefault(k, {}).get(q['dr'], 0) + 1
             best_dr = {k: max(v.items(), key=lambda kv: kv[1])[0] for k, v in votes.items()}
             # полные ФИО портянки достраивают инициалы из Ф-9; и наоборот —
-            # написание портянки точнее, чем распознанное OCR (у отчества
-            # OCR часто «Файздрахманрвна» вместо «Файздрахмановна»)
+            # написание справки Ф-9 вернее (её выдала паспортная служба), но
+            # только если имя не испорчено распознаванием
+            port_matched = set()
+            port_named = [(c['full'] or f"{c['surname']} {c['init']}", c)
+                           for c in port_persons]
             for p in f9:
                 nm = p['fio']
-                cand = next((c['full'] for c in g['persons']
-                             if c['full'] and clean(c['surname']) == clean(nm) and
-                             (c['init'] == p['init'] or c['init'] == '?')), None)
+                cand, _way = match_person(nm, [x for x, _c in port_named])
                 if cand and cand != nm:
-                    nm = cand
+                    nm = _prefer_name(nm, cand)
+                    for x, c in port_named:
+                        if x == cand:
+                            port_matched.add(id(c))
                 pp = f'{p["pasport"]}, выдан {p["kem"]}' if p['pasport'] and p['kem'] else p['pasport']
                 k = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
+                if len(str(nm).split()) < 3 and k in full_by_key:
+                    # полное имя того же человека нашлось в справке по другому
+                    # лицевому счёту (квартира с несколькими счетами)
+                    warn.append(f'ЛС {ls}: для «{nm}» взято полное имя «{full_by_key[k]}» из справки '
+                                'Ф-9 по другому лицевому счёту — проверьте.')
+                    nm = full_by_key[k]
                 dr = best_dr.get(k, p['dr'])
                 if not dr:
                     # дата не распозналась: ищем её рядом с «Имя Отчество»
                     # (в таблице OCR теряет начало фамилии — «о НИКОВ Юрий
                     # Анатольевич 01.05.1962»)
                     dr = find_dr_by_name(f9_texts, nm)
-                rows.append([g['ls'], nm, dr, p['place'], pp, ''])  # Пол — пусто
+                if not dr:
+                    # тот же человек встречается в справках по другим счетам
+                    # (квартира с несколькими лицевыми счетами) — дата рождения
+                    # берём оттуда и предупреждаем
+                    got = dr_by_key.get(k)
+                    if got:
+                        dr = got[0]
+                        warn.append(f'ЛС {ls}: у «{nm}» дата рождения взята из справки Ф-9 '
+                                    f'по другому лицевому счёту {got[1]} — проверьте.')
+                rows.append([ls, nm, dr, p['place'], pp, ''])  # Пол — пусто
                 n_person += 1
                 age = age_at(dr)
                 if age is not None and age < MINOR_AGE:
                     # несовершеннолетний, зарегистрированный в квартире, —
                     # в судебный документ не включается (в книге остаётся)
-                    minors.append((g['ls'], nm, dr, age))
-            for p in g['persons']:
-                key = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
-                if key not in f9_keys and clean(p['surname']) not in {k[0] for k in f9_keys}:
-                    warn.append(f'ЛС {g["ls"]}: из портянки «{p["full"] or p["surname"] + " " + p["init"]}.» '
-                                'не найден в Ф-9 — проверьте, входит ли в документ.')
-        else:
-            if g['persons']:
-                for p in g['persons']:
-                    nm = p['full'] or f'{p["surname"]} {p["init"][0]}.{p["init"][1]}.'
-                    rows.append([g['ls'], nm, '', '', '', ''])
+                    minors.append((ls, nm, dr, age))
+            # лица из графы «собственник/наниматель» — их может не быть в
+            # таблице регистраций
+            for gr in [x for _fn, _pg, _t, gg, _how in f9_items for x in (gg or [])]:
+                if not any(_same_person(gr, r[1]) for r in rows):
+                    rows.append([ls, gr, '', '', '', ''])
                     n_person += 1
-                warn.append(f'ЛС {g["ls"]}: нет Ф-9 — ФИО из портянки; дата рождения и паспорт НЕ заполнены.')
+            # плательщики из портянки: если их нет в справке — строка без
+            # даты рождения и паспорта (в документ такая не соберётся)
+            for p in port_persons:
+                key = (re.sub(r'\s*\([^)]*\)', '', p['surname']).lower(), p['init'])
+                nm = p['full'] or f'{p["surname"]} {p["init"][0]}.{p["init"][1]}.'
+                if id(p) in port_matched or key in f9_keys or any(_same_person(nm, r[1]) for r in rows):
+                    continue
+                nt = notes_for_person(nm, notes)
+                rows.append([ls, nm, nt.get('dr', ''), '', nt.get('pasport', ''), ''])
+                n_person += 1
+                if nt.get('dr'):
+                    warn.append(f'ЛС {ls}: «{nm}» из портянки в справке Ф-9 не найден, но дата '
+                                f'рождения ({nt["dr"]}) взята из графы «Примечание» — проверьте.')
+                else:
+                    warn.append(f'ЛС {ls}: «{nm}» из портянки в справке Ф-9 не найден — '
+                                'дата рождения и паспорт НЕ заполнены, впишите вручную.')
+        else:
+            if port_persons:
+                for p in port_persons:
+                    nm = p['full'] or f'{p["surname"]} {p["init"][0]}.{p["init"][1]}.'
+                    nt = notes_for_person(nm, notes)
+                    rows.append([ls, nm, nt.get('dr', ''), '', nt.get('pasport', ''), ''])
+                    n_person += 1
+                if any(r[2] for r in rows):
+                    warn.append(f'ЛС {ls}: справки Ф-9 по этому счёту нет — ФИО из портянки, дата '
+                                'рождения и паспорт взяты из графы «Примечание» справки соседнего '
+                                'счёта этой квартиры; проверьте.')
+                else:
+                    warn.append(f'ЛС {ls}: нет Ф-9 — ФИО из портянки; дата рождения и паспорт НЕ заполнены.')
             else:
-                warn.append(f'ЛС {g["ls"]}: В ПОРТЯНКЕ ПУСТАЯ КОЛОНКА «ФИО» — должников нет! '
+                warn.append(f'ЛС {ls}: В ПОРТЯНКЕ ПУСТАЯ КОЛОНКА «ФИО» — должников нет! '
                             'Добавьте их вручную на лист «Должники» (или это ЛС без жилого помещения?).')
+        # недостающую дату рождения и паспорт добираем из графы «Примечание»
+        if notes:
+            for r in rows:
+                if not r[1] or r[2]:
+                    continue
+                nt = notes_for_person(r[1], notes)
+                if nt.get('dr'):
+                    r[2] = nt['dr']
+                if nt.get('pasport') and not r[4]:
+                    r[4] = nt['pasport']
         # порядок должников — как в справке Ф-9 (страницы по номерам); он
         # одинаков от запуска к запуску, поэтому не меняются ни шапка
         # документа, ни имя файла

@@ -53,6 +53,8 @@ mkdir -p "$DEST"
 cp -f "$SRC/app/"*.py "$SRC/app/"*.sh "$DEST/"
 chmod +x "$DEST/"*.sh "$DEST/desktop_app.py"
 cp -n "$SRC/app/demo-housing.xlsx" "$DEST/"
+# Флаги разделов: копируем только если файла ещё нет — правки пользователя не затираем.
+cp -n "$SRC/app/features.json" "$DEST/" 2>/dev/null
 mkdir -p "$POD/incoming"
 cp -n "$SRC/templates/"*.doc "$POD/"
 cp -f "$SRC/incoming/README.txt" "$POD/incoming/" 2>/dev/null
