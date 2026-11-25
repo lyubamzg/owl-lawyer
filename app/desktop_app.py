@@ -34,10 +34,11 @@ BOOKS_JKU = ['housing-input.xlsx', 'input-workbook.xlsx']
 BOOKS_SEM = ['family-questionnaire.xlsx']
 BOOKS_POTR = ['consumer-questionnaire.xlsx']
 BOOKS_DOG = ['contracts-workbook.xlsx']
+BOOKS_PRET = ['pretension-input.xlsx']
 
 root = tk.Tk()
 root.title('СОВА — рабочее место юриста')
-root.geometry('1180x780')
+root.geometry('1208x780')
 root.minsize(1040, 700)
 root.configure(bg=BG)
 
@@ -55,7 +56,9 @@ small = tkfont.Font(family=family, size=10)
 heading = tkfont.Font(family=family, size=25, weight='bold')
 logf = tkfont.Font(family=platform_utils.pick_family(tkfont, platform_utils.UI_FONT_MONO), size=10)
 
-sidebar = tk.Frame(root, bg=SIDEBAR, width=224)
+SIDEBAR_WIDTH = 252
+SEL_BG = '#20334D'
+sidebar = tk.Frame(root, bg=SIDEBAR, width=SIDEBAR_WIDTH)
 sidebar.pack(side='left', fill='y')
 sidebar.pack_propagate(False)
 brand = tk.Frame(sidebar, bg=SIDEBAR)
@@ -80,6 +83,30 @@ tk.Label(sidebar, text='НАПРАВЛЕНИЯ', font=(family, 9, 'bold'), bg=SI
          fg='#65778F', anchor='w').pack(fill='x', padx=24, pady=(0, 12))
 tab_row = tk.Frame(sidebar, bg=SIDEBAR)
 tab_row.pack(fill='x', padx=12)
+
+
+class NavLabel(tk.Label):
+    """Пункт бокового меню: длинное название переносится на две строки."""
+
+    def __init__(self, master, text, font, command, **kw):
+        super().__init__(master, text=text, font=font, bg=SIDEBAR, fg=MUTED,
+                         anchor='w', justify='left', padx=14, pady=13,
+                         cursor='hand2', **kw)
+        self.command = command
+        self.bind('<Button-1>', lambda e: self.command())
+        self.bind('<Enter>', self._on_enter)
+        self.bind('<Leave>', self._on_leave)
+
+    def set_colors(self, bg, fg=MUTED):
+        self.configure(bg=bg, fg=fg)
+
+    def _on_enter(self, event=None):
+        if self.cget('bg') != SEL_BG:
+            self.configure(bg=SURFACE)
+
+    def _on_leave(self, event=None):
+        if self.cget('bg') != SEL_BG:
+            self.configure(bg=SIDEBAR)
 privacy = tk.Frame(sidebar, bg=SIDEBAR)
 privacy.pack(side='bottom', fill='x', padx=24, pady=26)
 tk.Frame(privacy, bg=BORDER, height=1).pack(fill='x', pady=(0, 18))
@@ -957,7 +984,7 @@ def окно_договоров():
 
 sections = []
 SECTION_INFO = {
-    'РАЗДЕЛ ЖКУ': ('Жилищное право',
+    'КОНСТРУКТОР СУДЕБНЫХ ДОКУМЕНТОВ': ('Конструктор судебных документов',
         'Судебные приказы и иски о взыскании задолженности за ЖКУ.',
         ('Выберите расчёт бухгалтерии и справки Ф-9. Данные будут перенесены в таблицу.',
          'Сверьте должников, реквизиты и суммы. Сохраните изменения в редакторе.',
@@ -967,6 +994,11 @@ SECTION_INFO = {
         ('Загрузите паспорт, свидетельство о браке и документы детей.',
          'Проверьте распознанные данные и заполните обстоятельства дела.',
          'Сформируйте исковое заявление и проверьте итоговый документ.')),
+    'ДОСУДЕБНЫЕ ПРЕТЕНЗИИ': ('Досудебные претензии',
+        'Претензии о взыскании задолженности за ЖКУ до обращения в суд.',
+        ('Выберите список Excel: лицевой счёт, ФИО, адрес, сумма. Можно приложить и шаблон претензии.',
+         'Проверьте список претензий и настройки: шапку, номер, дату и период долга.',
+         'Соберите претензии: по одной на должника, каждая на отдельной странице.')),
     'ЗАЩИТА ПРАВ ПОТРЕБИТЕЛЯ': ('Права потребителей',
         'Иски о возврате денег, замене товара и устранении недостатков.',
         ('Выберите паспорт, претензию, чеки и другие документы по делу.',
@@ -977,9 +1009,10 @@ SECTION_INFO = {
 # Флаги разделов (файл features.json рядом с программой).
 # None — раздел включается всегда.
 SECTION_FLAGS = {
-    'РАЗДЕЛ ЖКУ': None,
+    'КОНСТРУКТОР СУДЕБНЫХ ДОКУМЕНТОВ': None,
     'СЕМЕЙНОЕ ПРАВО': 'семейное_право',
     'ЗАЩИТА ПРАВ ПОТРЕБИТЕЛЯ': 'защита_прав_потребителя',
+    'ДОСУДЕБНЫЕ ПРЕТЕНЗИИ': 'досудебные_претензии',
 }
 
 
@@ -993,7 +1026,7 @@ def create_section(title, rows, default_open=False, word='таблица', books
     def close_panel():
         entry['state']['open'] = False
         entry['frame'].pack_forget()
-        button_colors(entry['btn'], SIDEBAR, SURFACE, MUTED)
+        entry['btn'].set_colors(SIDEBAR, MUTED)
 
     def open_panel():
         if entry['state']['open']:
@@ -1005,14 +1038,14 @@ def create_section(title, rows, default_open=False, word='таблица', books
         entry['state']['open'] = True
         current_section.update(books=books, word=word, entry=entry)
         entry['frame'].pack(before=activity_panel, fill='x')
-        button_colors(entry['btn'], '#20334D', '#293F5C', FG)
+        entry['btn'].set_colors(SEL_BG, FG)
         page_title.config(text=display)
         page_description.config(text=description)
         refresh_status()
 
-    btn = Button(tab_row, text=display, font=mid, bg=SIDEBAR, fg=MUTED,
-                 activebackground=SURFACE, anchor='w', width=0,
-                 cursor='hand2', padx=14, pady=13, command=open_panel)
+    # название раздела показываем целиком: не влезает в строку — переносится
+    btn = NavLabel(tab_row, display, mid, open_panel,
+                   wraplength=SIDEBAR_WIDTH - 2 * 12 - 28)
     btn.pack(fill='x', pady=3)
     frame = tk.Frame(main_content, bg=BG)
     entry.update(btn=btn, frame=frame, close_panel=close_panel,
@@ -1082,7 +1115,34 @@ jku_rows = [
      PRIMARY),
 ]
 jku_steps.extend(c for _, c, _ in jku_rows)
-create_section('РАЗДЕЛ ЖКУ', jku_rows, default_open=True, word='таблица', books=BOOKS_JKU)
+create_section('КОНСТРУКТОР СУДЕБНЫХ ДОКУМЕНТОВ', jku_rows, default_open=True,
+               word='таблица', books=BOOKS_JKU)
+
+pret_steps = []   # цепочка этапов для кнопок «Следующий шаг»
+
+pret_rows = [
+    ('📋  1. Загрузить список должников',
+     make_load_data(
+         'import_pretension.py',
+         '── ЗАГРУЗКА СПИСКА ПРЕТЕНЗИЙ ──',
+         'Список загружен. Откройте таблицу и проверьте список претензий и настройки.',
+         ('Список Excel: столбцы «лицевой счёт, ФИО, адрес, сумма». Шапки может не быть.',
+          'Можно выбрать сразу и файл шаблона претензии (.docx) — он подхватится как шаблон.',
+          'В списке настройте шапку, номер претензии, дату и период — на листе «Настройки».',
+          'Точные повторы (одна ФИО, адрес и сумма) пропускаются — в отчёте видно, какие.'),
+         on_done=step_hook(pret_steps, 0)),
+     PRIMARY),
+    ('✏️  2. Открыть таблицу в редакторе',
+     make_open_editor(BOOKS_PRET, on_done=step_hook(pret_steps, 1)), SURFACE_HOVER),
+    ('⚖️  3. Собрать претензии',
+     make_build_docs(BOOKS_PRET, 'generate_pretension.py', 'validation-report-pretension.txt',
+                     'output-pretension/202*', 'СБОРКА ДОСУДЕБНЫХ ПРЕТЕНЗИЙ',
+                     on_done=step_hook(pret_steps, 2)),
+     PRIMARY),
+]
+pret_steps.extend(c for _, c, _ in pret_rows)
+create_section('ДОСУДЕБНЫЕ ПРЕТЕНЗИИ', pret_rows, default_open=False,
+               word='таблица', books=BOOKS_PRET)
 
 sem_steps = []    # цепочка этапов для кнопок «Следующий шаг»
 
@@ -1137,9 +1197,7 @@ create_section('ЗАЩИТА ПРАВ ПОТРЕБИТЕЛЯ', potr_rows, defaul
                word='анкета потребителя', books=BOOKS_POTR)
 
 if features.enabled('договоры'):
-    contracts_nav = Button(tab_row, text='Договоры  ↗', font=mid, bg=SIDEBAR, fg=MUTED,
-                           activebackground=SURFACE, anchor='w', width=0,
-                           cursor='hand2', padx=14, pady=13, command=окно_договоров)
+    contracts_nav = NavLabel(tab_row, 'Договоры  ↗', mid, окно_договоров)
     contracts_nav.pack(fill='x', pady=3)
 
 

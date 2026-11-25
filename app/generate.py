@@ -36,6 +36,11 @@ try:                       # запасной источник почтовог�
 except Exception:          # noqa: BLE001
     postrf_index = None
 
+try:                       # локальная база судебных участков (резерв подсудности,
+    import sudrf_base      # когда ГАС «Правосудие» не отвечает)
+except Exception:          # noqa: BLE001
+    sudrf_base = None
+
 BASE = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------- числа ----
@@ -802,6 +807,10 @@ def apply_jurisdiction(docs, cfg, warnings):
     if not auto and not idx_on:
         return docs, []
     threshold = parse_sum(_cfg_get(cfg, 'порог мирового судьи, руб.')) or 50000
+    # источник подсудности: «гас» — живая ГАС «Правосудие» (и локальная база
+    # как резерв), «база» — только локальная база участков, без обращения к сайту
+    source_pref = (_cfg_get(cfg, 'подсудность (источник)') or 'гас').strip().lower()
+    base_only = source_pref.startswith('база') or source_pref.startswith('base')
     dropped = []
     cache = {}
     reported = set()
@@ -810,12 +819,16 @@ def apply_jurisdiction(docs, cfg, warnings):
         if not addr:
             continue
         if addr not in cache:
-            try:
-                cache[addr] = sudrf_lookup.lookup(addr)
-            except Exception as ex:  # noqa: BLE001
-                cache[addr] = {'ok': False, 'error': str(ex), 'notes': [],
-                                'postal_code': '', 'courts': []}
-            time.sleep(0.2)
+            if base_only:
+                cache[addr] = {'ok': False, 'error': '', 'notes': [],
+                                'postal_code': '', 'courts': [], 'service_down': False}
+            else:
+                try:
+                    cache[addr] = sudrf_lookup.lookup(addr)
+                except Exception as ex:  # noqa: BLE001
+                    cache[addr] = {'ok': False, 'error': str(ex), 'notes': [],
+                                    'postal_code': '', 'courts': []}
+                time.sleep(0.2)
         res = cache[addr]
         for note in res.get('notes') or []:
             if note not in reported:   # один и тот же адрес — одна заметка
@@ -844,15 +857,39 @@ def apply_jurisdiction(docs, cfg, warnings):
         # --- суд в шапке ---
         if auto:
             manual = ' / '.join(x for x in c.get('sud') or [] if x)
-            lines, note, res2 = sudrf_lookup.court_for_addr(
-                addr, typ=c['typ'], cena=(c.get('dolg') or 0) + (c.get('peni') or 0),
-                threshold=threshold, res=res)
+            if base_only:
+                lines, note, res2 = [], '', res
+            else:
+                lines, note, res2 = sudrf_lookup.court_for_addr(
+                    addr, typ=c['typ'], cena=(c.get('dolg') or 0) + (c.get('peni') or 0),
+                    threshold=threshold, res=res)
+            source = 'ГАС «Правосудие»'
+            if lines and sudrf_base is not None and res2.get('ms'):
+                # ГАС ответила — запоминаем сопоставление «населённый пункт → участок»,
+                # чтобы в следующий раз подсудность определилась и без сайта
+                try:
+                    sudrf_base.remember(addr, res2['ms'].get('name') or '')
+                except Exception:  # noqa: BLE001
+                    pass
+            if not lines and sudrf_base is not None:
+                # ГАС «Правосудие» не ответила или не нашла — ищем участок
+                # в локальной базе судебных участков России
+                part, note_base = sudrf_base.find(addr)
+                if part:
+                    if c['typ'] == 'ИСК' and (c.get('dolg') or 0) + (c.get('peni') or 0) > threshold \
+                            and part.get('court'):
+                        lines = [f'В {part["court"]}']
+                        note = f'районный суд по базе участков ({note_base})'
+                    else:
+                        lines = sudrf_base.court_lines(part)
+                        note = f'участок по базе судебных участков ({note_base})'
+                    source = 'локальная база судебных участков'
             if lines:
                 c['sud'] = lines
                 if manual and not _sud_equiv(manual, lines[0]):
-                    warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд по адресу (ГАС '
-                                    f'«Правосудие») — «{lines[0]}» — отличается от указанного '
-                                    f'вручную «{manual}». В документ подставлен суд по адресу.')
+                    warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд по адресу ({source}) — '
+                                    f'«{lines[0]}» — отличается от указанного вручную «{manual}». '
+                                    f'В документ подставлен суд по адресу.')
                 else:
                     warnings.append(f'Заявление {c["num"]} (ЛС {c["ls"]}): суд в шапке определён '
                                     f'по адресу — {note}.')

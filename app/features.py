@@ -23,6 +23,7 @@ DEFAULTS = {
     'семейное_право': True,
     'защита_прав_потребителя': True,
     'договоры': True,
+    'досудебные_претензии': True,
 }
 
 APP_FILE = BASE / 'features.json'

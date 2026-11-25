@@ -27,6 +27,8 @@ f9-text/
 contract-templates/
 
 # рабочие книги ввода, портянки и анкеты
+pretension-input*.xlsx
+output-pretension/
 input-workbook*.xlsx
 housing-input*.xlsx
 contracts-workbook*.xlsx
