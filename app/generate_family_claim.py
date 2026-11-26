@@ -24,6 +24,11 @@ from generate import (add_par, sum_words, fmt_date, parse_date, parse_sum,
 from docx import Document
 from docx.shared import Pt, Cm
 
+try:                    # почтовый индекс по адресу — локальная база + ФИАС
+    import postal_index
+except Exception:       # noqa: BLE001
+    postal_index = None
+
 BASE = Path(__file__).resolve().parent
 ANKETA = BASE / 'family-questionnaire.xlsx'
 OUT_BASE = BASE / 'output-family'
@@ -33,6 +38,19 @@ POSHLINA_DEFAULT = 5000  # пп. 5 п. 1 ст. 333.19 НК РФ (с 09.2024)
 # По ст. 81 СК РФ: на одного 1/4, на двух 1/3, на трёх и более 1/2
 ALIM_FRAC = {1: '1/4', 2: '1/3', 3: '1/2'}
 ALIM_COL = 'Доля алиментов (1/4, 1/3, 1/2 или твердая сумма)'
+
+
+def with_index(addr, who, warnings):
+    """Дописать почтовый индекс в адрес, если его там нет."""
+    addr = str(addr or '').strip()
+    if not addr or postal_index is None or postal_index.has_index(addr):
+        return addr
+    new_addr, idx, note = postal_index.ensure_index(addr)
+    if idx:
+        warnings.append(f'В адрес {who} добавлен почтовый индекс {idx} ({note}).')
+        return new_addr
+    warnings.append(f'Почтовый индекс по адресу {who} «{addr}» не найден.')
+    return addr
 
 
 # ---------------------------------------------------------------- чтение ----
@@ -133,6 +151,9 @@ def validate_case(d, deti, errors, warnings):
     c['ot_dr'] = parse_date(d.get('Дата рождения ответчика', ''))
     c['ot_addr'] = d.get('Адрес ответчика', '')
     c['ot_pasp'] = d.get('Паспорт ответчика (кем и когда выдан)', '')
+    # почтовые индексы подтягиваем сами, если их нет в анкете
+    c['addr'] = with_index(c['addr'], 'истца', warnings)
+    c['ot_addr'] = with_index(c['ot_addr'], 'ответчика', warnings)
     if c['ot_fio']:
         oth = [w for w, v in (('адрес', c['ot_addr']), ('паспортные данные', c['ot_pasp']))
                if not v]

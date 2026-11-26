@@ -27,8 +27,12 @@ f9-text/
 contract-templates/
 
 # локальная база судебных участков (6 МБ реальной географии) — собирается
-# скриптом update_sudebnye_uchastki.py, в репозиторий не кладём
-data/
+# скриптом update_sudebnye_uchastki.py, в репозиторий не кладём.
+# А база почтовых индексов — публичные данные ОПС «Почты России»,
+# кладём: без неё индексы не подтягиваются офлайн.
+data/*
+!data/postal_base.json.gz
+!data/postal_streets.txt.gz
 
 # рабочие книги ввода, портянки и анкеты
 pretension-input*.xlsx

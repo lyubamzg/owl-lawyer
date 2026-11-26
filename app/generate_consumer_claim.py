@@ -23,12 +23,30 @@ from generate import add_par, sum_words, fmt_date, parse_date, parse_sum, cell_s
 from generate_family_claim import new_doc, person_family_line, fio_nom_short
 from docx.shared import Pt, Cm
 
+try:                    # почтовый индекс по адресу — локальная база + ФИАС
+    import postal_index
+except Exception:       # noqa: BLE001
+    postal_index = None
+
 BASE = Path(__file__).resolve().parent
 ANKETA = BASE / 'consumer-questionnaire.xlsx'
 OUT_BASE = BASE / 'output-consumer'
 REPORT_NAME = 'validation-report-consumer.txt'
 
 PRICE_LIMIT_POST = 1_000_000  # п. 3 ст. 333.36 НК РФ: освобождение потребителей до 1 млн ₽
+
+
+def with_index(addr, who, warnings):
+    """Дописать почтовый индекс в адрес, если его там нет."""
+    addr = str(addr or '').strip()
+    if not addr or postal_index is None or postal_index.has_index(addr):
+        return addr
+    new_addr, idx, note = postal_index.ensure_index(addr)
+    if idx:
+        warnings.append(f'В адрес {who} добавлен почтовый индекс {idx} ({note}).')
+        return new_addr
+    warnings.append(f'Почтовый индекс по адресу {who} «{addr}» не найден.')
+    return addr
 
 
 # ---------------------------------------------------------------- чтение ----
@@ -110,6 +128,9 @@ def validate_case(d, para, errors, warnings):
     c['ot_inn'] = d.get('ИНН/ОГРН ответчика', '')
     if not c['ot_addr']:
         warnings.append('Не указан адрес ответчика — в иске будет «адрес неизвестен».')
+    # почтовые индексы подтягиваем сами, если их нет в анкете
+    c['addr'] = with_index(c['addr'], 'истца', warnings)
+    c['ot_addr'] = with_index(c['ot_addr'], 'ответчика', warnings)
 
     c['price'] = parse_sum(d.get('Стоимость товара (услуги), руб.', ''))
     if c['price'] is None:

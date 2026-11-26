@@ -17,11 +17,47 @@ from pathlib import Path
 
 import docx
 from docx.oxml.ns import qn
+from docx.shared import Pt
 from docx.text.run import Run
+
+try:                    # почтовый индекс по адресу — локальная база + ФИАС
+    import postal_index
+except Exception:       # noqa: BLE001
+    postal_index = None
 
 BASE = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE / 'pretension-templates'
 BOOK = 'pretension-input.xlsx'
+
+# ширины символов Times New Roman (в 1/1000 кегля) — нужны, чтобы подобрать
+# кегль строки адреса так, чтобы она влезла в правую колонку шапки
+WIDTHS = {
+    ' ': 250, '!': 333, '"': 555, '#': 500, '$': 500, '%': 1000, '&': 833, "'": 278,
+    '(': 333, ')': 333, '*': 500, '+': 570, ',': 250, '-': 333, '.': 250, '/': 278,
+    '0': 500, '1': 500, '2': 500, '3': 500, '4': 500, '5': 500, '6': 500, '7': 500,
+    '8': 500, '9': 500, ':': 333, ';': 333, '<': 570, '=': 570, '>': 570, '?': 500,
+    '@': 930, 'A': 722, 'B': 667, 'C': 722, 'D': 722, 'E': 667, 'F': 611, 'G': 778,
+    'H': 778, 'I': 389, 'J': 500, 'K': 778, 'L': 667, 'M': 944, 'N': 722, 'O': 778,
+    'P': 611, 'Q': 778, 'R': 722, 'S': 556, 'T': 667, 'U': 722, 'V': 722, 'W': 1000,
+    'X': 722, 'Y': 722, 'Z': 667, '[': 333, '\\': 278, ']': 333, '^': 581, '_': 500,
+    '`': 333, 'a': 500, 'b': 556, 'c': 444, 'd': 556, 'e': 444, 'f': 333, 'g': 500,
+    'h': 556, 'i': 278, 'j': 333, 'k': 556, 'l': 278, 'm': 833, 'n': 556, 'o': 500,
+    'p': 556, 'q': 556, 'r': 444, 's': 389, 't': 333, 'u': 556, 'v': 500, 'w': 722,
+    'x': 500, 'y': 500, 'z': 444, '{': 394, '|': 220, '}': 394, '~': 520, '«': 500,
+    '»': 500, 'Ё': 667, 'А': 722, 'Б': 661, 'В': 667, 'Г': 636, 'Д': 688, 'Е': 667,
+    'Ж': 989, 'З': 528, 'И': 778, 'Й': 778, 'К': 725, 'Л': 745, 'М': 944, 'Н': 778,
+    'О': 778, 'П': 778, 'Р': 611, 'С': 722, 'Т': 667, 'У': 734, 'Ф': 859, 'Х': 722,
+    'Ц': 778, 'Ч': 734, 'Ш': 1098, 'Щ': 1098, 'Ъ': 765, 'Ы': 982, 'Ь': 661, 'Э': 678,
+    'Ю': 1126, 'Я': 722, 'а': 500, 'б': 500, 'в': 540, 'г': 454, 'д': 506, 'е': 444,
+    'ж': 725, 'з': 402, 'и': 576, 'й': 576, 'к': 576, 'л': 561, 'м': 681, 'н': 576,
+    'о': 500, 'п': 576, 'р': 556, 'с': 444, 'т': 491, 'у': 500, 'ф': 692, 'х': 500,
+    'ц': 576, 'ч': 564, 'ш': 844, 'щ': 844, 'ъ': 583, 'ы': 781, 'ь': 529, 'э': 432,
+    'ю': 764, 'я': 541, 'ё': 444, '–': 500, '—': 1000, '№': 1005,
+}
+# шаг табуляции по умолчанию (1,25 см) — в пунктах
+TAB_STEP = 35.43
+# кегли, которыми подбирается строка адреса
+ADDR_FONT_SIZES = (10, 9, 8)
 REPORT = 'validation-report-pretension.txt'
 
 MONTHS = ('января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -31,9 +67,12 @@ MONTHS = ('января', 'февраля', 'марта', 'апреля', 'ма�
 FIO_RE = re.compile(
     r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.'
     r'(?:\s*,\s*[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)*')
-# адрес получателя: почтовый индекс и/или населённый пункт, улица, дом, квартира
+# адрес получателя: почтовый индекс, населённый пункт, улица, дом, квартира
 ADDR_RE = re.compile(
-    r'(?:\d{6},\s*)?[А-ЯЁ][а-яё\-]*[^;|\n]{0,90}?д\.\s*\d+[А-Яа-яА-Я]*'
+    r'(?:\d{6}\s*,\s*)?'                       # почтовый индекс
+    r'(?:(?:г|гор|город|пос|с|ст|д|село)\.\s*)?'   # «г.», «пос.», «с.» и т. п.
+    r'[А-ЯЁ][а-яё\-]*'                         # населённый пункт
+    r'[^;|\n]{0,90}?д\.\s*\d+[А-Яа-яА-Я]*'     # улица, дом
     r'\s*кв\.?\s*\d*')
 NUM_RE = re.compile(r'№\s*(\d+)\s*от\s*(\d{1,2}\.\d{1,2}\.\d{4})')
 STATE_RE = re.compile(r'по состоянию на\s+(.{1,40}?)\s+года')
@@ -267,6 +306,69 @@ def _as_date(value):
     return None
 
 
+# ─────────────────────────────────────── исходящий номер и дата пакета ──
+def parse_outgoing(value):
+    """«100 от 10.11.2026» → («100», 10.11.2026)."""
+    s = str(value or '').strip()
+    if not s:
+        return None, None
+    d = None
+    m = re.search(r'\d{1,2}\.\d{1,2}\.\d{2,4}', s)
+    if m:
+        d = _as_date(m.group(0))
+        s = s[:m.start()] + ' ' + s[m.end():]
+    m = re.search(r'\d+', s)
+    return (m.group(0) if m else None), d
+
+
+def outgoing(settings, claim=None):
+    """Исходящий номер и дата претензий — одни на весь пакет.
+
+    Их указывает сотрудник в таблице «Настройки» перед сборкой документов:
+    претензии отправляются пакетом, поэтому в шапке «№ … от …» номер и дата
+    общие. Строка списка может переопределить пару своими значениями.
+    """
+    st = {str(k).strip().lower(): v for k, v in (settings or {}).items()}
+    if claim:
+        cn = str(claim.get('номер') or '').strip()
+        cd = str(claim.get('дата_претензии') or '').strip()
+        if cn and cd:
+            num, _ = parse_outgoing(cn)
+            _, cdate = parse_outgoing(cd)
+            return num or cn, cdate
+    num = d = None
+    for key in ('исходящий_номер_и_дата', 'претензия_номер_от'):
+        raw = str(st.get(key) or '').strip()
+        if not raw:
+            continue
+        n, dd = parse_outgoing(raw)
+        if n and not num:
+            num = n
+        if dd and not d:
+            d = dd
+        if num and d:
+            break
+    if num and not d:
+        d = _as_date(st.get('дата_претензии'))
+    return num, d
+
+
+def state_date(claim, settings, out_date=None, today=None):
+    """Дата, на которую числится долг («по состоянию на …»).
+
+    Претензии считаются по состоянию на 1-е число месяца исходящей даты.
+    """
+    today = today or date.today()
+    d = _as_date((claim or {}).get('дата_состояния'))
+    if d:
+        return d
+    d = _as_date((settings or {}).get('дата_состояния'))
+    if d:
+        return d
+    if out_date:
+        return date(today.year, out_date.month, 1)
+    return today
+
 
 # ──────────────────────────────────────────────────────── сборка книги ──
 DEFAULT_SETTINGS = [
@@ -292,8 +394,7 @@ DEFAULT_SETTINGS = [
     ('КПП', ''),
     ('директор', ''),
     ('исполнитель', ''),
-    ('претензия_номер_от', '1'),
-    ('дата_претензии', ''),
+    ('исходящий_номер_и_дата', ''),
     ('срок_оплаты, дней', '30'),
     ('дата_состояния', ''),
     ('период', ''),
@@ -338,6 +439,26 @@ def read_book(path):
     settings = sheet_settings(wb['Настройки']) if 'Настройки' in wb.sheetnames else {}
     claims = sheet_claims(wb['Претензии']) if 'Претензии' in wb.sheetnames else []
     return settings, claims
+
+
+def ensure_settings(ws):
+    """Добавить в лист «Настройки» недостающие строки параметров.
+
+    Возвращает {ключ: номер строки}.
+    """
+    rows = {}
+    for r in range(2, ws.max_row + 1):
+        key = str(ws.cell(row=r, column=1).value or '').strip().lower()
+        if key:
+            rows[key] = r
+    for key, val in DEFAULT_SETTINGS:
+        low = key.strip().lower()
+        if low not in rows:
+            r = ws.max_row + 1
+            ws.cell(row=r, column=1, value=key)
+            ws.cell(row=r, column=2, value=val)
+            rows[low] = r
+    return rows
 
 
 def header_values(settings):
@@ -511,13 +632,23 @@ def apply_header(paras, head, tpl=None):
 
 
 def _replace_after_label(par, label, value, stop=None):
-    """Заменить значение после метки, сохранив пробелы вокруг."""
+    """Заменить значение после метки, сохранив пробелы вокруг.
+
+    Ширину плейсхолдера («__________») держим: от неё зависит вёрстка шапки —
+    иначе пунктирная строка справа съедет влево.
+    """
     span = _span_after(par.text, label, stop)
     if not span:
         return False
     orig = par.text[span[0]:span[1]]
     lead = orig[:len(orig) - len(orig.lstrip())]
-    replace_span(par, span[0], span[1], lead + value)
+    trail = orig[len(orig.rstrip()):]
+    core = orig.strip()
+    if core and len(value) < len(core):
+        core = value + ' ' * (len(core) - len(value))
+    else:
+        core = value
+    replace_span(par, span[0], span[1], lead + core + trail)
     return True
 
 
@@ -554,17 +685,87 @@ def _left_text(par):
 
 
 def _replace_left(par, value):
-    """Заменить левую колонку абзаца (первый run), не потеряв отступы."""
+    """Заменить левую колонку абзаца (первый run), не потеряв отступы.
+
+    Ширину плейсхолдера держим — от неё зависит, где встанет правая колонка
+    (например, фамилия должника через табуляцию).
+    """
     span = _left_run_span(par)
     if not span:
         return
     s, e = span
     core = par.text[s:e].strip()
     if core:
+        if len(value) < len(core):
+            value = value + ' ' * (len(core) - len(value))
         replace_span(par, s, s + len(core), value)
 
 
 # ───────────────────────────────────────────────────── сборка документа ──
+def text_width(text, points):
+    """Ширина строки в пунктах (Times New Roman)."""
+    total = 0
+    for ch in str(text or ''):
+        total += WIDTHS.get(ch, 500)
+    return total / 1000.0 * float(points)
+
+
+def _run_size(run, default=12.0):
+    """Кегль run'а в пунктах."""
+    try:
+        if run.font.size is not None:
+            return run.font.size.pt
+    except Exception:       # noqa: BLE001
+        pass
+    return default
+
+
+def _column_width(par, doc):
+    """Ширина правой колонки шапки (в пунктах) — от адреса до поля страницы."""
+    try:
+        sect = doc.sections[0]
+        left = sect.left_margin.pt
+        right = sect.page_width.pt - sect.right_margin.pt
+    except Exception:       # noqa: BLE001
+        return 227.0
+    # текст до первой табуляции и число табуляций
+    before = ''
+    tabs = 0
+    size = 12.0
+    for r in _all_runs(par):
+        t = r.text
+        if '\t' in t:
+            head, _, tail = t.partition('\t')
+            before += head
+            tabs += 1 + tail.count('\t')
+            break
+        before += t
+        size = _run_size(r, size)
+    x = left + text_width(before, size)
+    for _ in range(tabs):
+        x = (int(x / TAB_STEP) + 1) * TAB_STEP
+    return max(right - x, 60.0)
+
+
+def _fit_size(text, avail):
+    """Наибольший кегль, при котором строка влезает в колонку."""
+    for size in ADDR_FONT_SIZES:
+        if text_width(text, size) <= avail:
+            return size
+    return ADDR_FONT_SIZES[-1]
+
+
+def _shrink(par, needle, points):
+    """Уменьшить кегль у run'ов, где встречается нужный текст."""
+    pos = par.text.find(needle)
+    if pos < 0:
+        return
+    end = pos + len(needle)
+    for r, s, e in _run_map(par):
+        if e > s and s < end and e > pos:
+            r.font.size = Pt(points)
+
+
 def build_document(template_path, claims, settings, out_path, report=None):
     """Собрать документ: одна претензия на строку списка, каждая с новой страницы."""
     doc = docx.Document(str(template_path))
@@ -588,14 +789,11 @@ def build_document(template_path, claims, settings, out_path, report=None):
 
     settings = {str(k).strip().lower(): v for k, v in settings.items()}
     head = header_values(settings)
-    default_state = settings.get('дата_состояния') or ''
     default_period = settings.get('период') or ''
     default_term = settings.get('срок_оплаты, дней') or '30'
-    default_date = settings.get('дата_претензии') or date.today().strftime('%d.%m.%Y')
-    try:
-        first_number = int(str(settings.get('претензия_номер_от') or 1).strip())
-    except ValueError:
-        first_number = 1
+    today = date.today()
+    pkg_number, pkg_date = outgoing(settings)   # номер и дата пакета
+    notes = []
 
     for n, claim in enumerate(claims):
         before = len(doc.paragraphs)
@@ -605,32 +803,57 @@ def build_document(template_path, claims, settings, out_path, report=None):
         for par in paras:          # поля Word (MERGEFIELD) — расцепить
             unlink_fields(par)
 
-        number = claim.get('номер')
-        number = int(str(number).strip()) if str(number or '').strip().isdigit() \
-            else first_number + n
-        claim_date = claim.get('дата_претензии') or default_date
-        state_date = claim.get('дата_состояния') or default_state \
-            or date.today().strftime('%d.%m.%Y')
+        number, claim_date = outgoing(settings, claim)
+        if number is None:
+            number = pkg_number
+        if claim_date is None:
+            claim_date = pkg_date
+        if number is None:
+            notes.append('исходящий номер не задан — в шапке остался номер шаблона')
+        if claim_date is None:
+            notes.append('исходящая дата не задана — в шапке осталась дата шаблона')
+        state = state_date(claim, settings, claim_date or pkg_date, today)
         period = claim.get('период') or default_period
         term = default_term
         fio = str(claim.get('фио') or '').strip()
         addr = str(claim.get('адрес') or '').strip()
+        ls = str(claim.get('лс') or '').strip()
         amount = money(claim.get('сумма'))
+
+        # почтовый индекс: если в адресе его нет — подтягиваем по базе индексов
+        if addr and postal_index is not None and not postal_index.has_index(addr):
+            new_addr, idx, note = postal_index.ensure_index(addr)
+            if idx:
+                notes.append('%s: в адрес добавлен почтовый индекс %s (%s)'
+                             % (fio or 'строка %d' % (n + 1), idx, note))
+                addr = new_addr
+            else:
+                notes.append('%s: почтовый индекс по адресу «%s» не найден'
+                             % (fio or 'строка %d' % (n + 1), addr))
+        # лицевой счёт — в строку адреса
+        addr_value = '%s - ЛС№%s' % (addr, ls) if ls else addr
 
         values = {
             'fio': fio,
-            'addr': addr,
-            'number': str(number),
-            'date': date_plain(claim_date),
-            'state_date': date_words(state_date),
-            'period': period,
+            'addr': addr_value,
+            'state_date': date_words(state),
             'sum': amount,
-            'term': str(term),
         }
+        # пустые значения не подставляем — остаётся текст шаблона
+        if period:
+            values['period'] = period
+        if term:
+            values['term'] = str(term)
+        if number is not None:
+            values['number'] = str(number)
+        if claim_date is not None:
+            values['date'] = date_plain(claim_date)
         # замены внутри одного абзаца — с конца к началу, чтобы смещения не «поехали»
         by_para = {}
         for key, (pi, s, e) in slots.items():
-            by_para.setdefault(pi, []).append((s, e, values.get(key, '')))
+            if key not in values:      # неизвестное оставляем как в шаблоне
+                continue
+            by_para.setdefault(pi, []).append((s, e, values[key]))
         for pi in sorted(by_para, reverse=True):
             if pi >= len(paras):
                 continue
@@ -639,8 +862,20 @@ def build_document(template_path, claims, settings, out_path, report=None):
         if n and paras:
             paras[0].paragraph_format.page_break_before = True
         apply_header(paras, head, tpl)
+        # строка адреса с лицевым счётом — кегль подбираем так, чтобы
+        # строка влезла в правую колонку шапки и не переносилась
+        # (ширину считаем по готовому абзацу — с уже подставленным телефоном)
+        if 'addr' in slots and addr_value:
+            ai = slots['addr'][0]
+            if ai < len(paras):
+                avail = _column_width(paras[ai], doc) * 0.98
+                _shrink(paras[ai], addr_value, _fit_size(addr_value, avail))
 
     if sect is not None:
         body.append(sect)
     doc.save(str(out_path))
-    return slots
+    uniq = []
+    for note in notes:
+        if note not in uniq:
+            uniq.append(note)
+    return slots, uniq

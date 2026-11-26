@@ -42,22 +42,19 @@ def main(argv):
     out_dir = OUT_DIR / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # имя файла — по исходящему номеру и дате из претензии:
+    # исходящий номер и дата — одни на весь пакет претензий; их указывает
+    # сотрудник в листе «Настройки» перед сборкой документов
+    pkg_number, pkg_date = pl.outgoing(settings)
+
+    # имя файла — по исходящему номеру и дате:
     # «Претензии № 906 от 24.11.2026.docx»
-    try:
-        num_from = int(str(settings.get('претензия_номер_от') or 1).strip() or 1)
-    except ValueError:
-        num_from = 1
-    first = claims[0]
-    first_number = first.get('номер')
-    first_number = (int(str(first_number).strip())
-                    if str(first_number or '').strip().isdigit()
-                    else num_from)
-    first_date = (first.get('дата_претензии')
-                  or settings.get('дата_претензии')
-                  or datetime.now().strftime('%d.%m.%Y'))
-    first_date = pl.date_plain(first_date)
-    out_path = out_dir / ('Претензии № %s от %s.docx' % (first_number, first_date))
+    if pkg_number and pkg_date:
+        out_path = out_dir / ('Претензии № %s от %s.docx'
+                              % (pkg_number, pl.date_plain(pkg_date)))
+    elif pkg_date:
+        out_path = out_dir / ('Претензии от %s.docx' % pl.date_plain(pkg_date))
+    else:
+        out_path = out_dir / 'Претензии.docx'
 
     warnings = []
     for n, c in enumerate(claims, 1):
@@ -70,10 +67,11 @@ def main(argv):
             warnings.append('%s: не указана сумма долга' % c.get('фио'))
 
     try:
-        slots = pl.build_document(template, claims, settings, out_path)
+        slots, notes = pl.build_document(template, claims, settings, out_path)
     except Exception as ex:  # noqa: BLE001
         print('Не удалось собрать документы: %s' % ex)
         return 1
+    warnings.extend(notes)
 
     # реестр
     wb = openpyxl.Workbook()
@@ -87,19 +85,19 @@ def main(argv):
         c.font = Font(bold=True)
     total = 0.0
     for n, c in enumerate(claims, 1):
-        number = c.get('номер')
-        number = int(str(number).strip()) if str(number or '').strip().isdigit() \
-            else num_from + n - 1
+        number, claim_date = pl.outgoing(settings, c)
+        if number is None:
+            number = pkg_number
+        if claim_date is None:
+            claim_date = pkg_date
         amount = pl.money(c.get('сумма'))
         try:
             total += float(str(c.get('сумма') or 0).replace(' ', '').replace(',', '.'))
         except (TypeError, ValueError):
             pass
-        vals = [n, c.get('лс'), c.get('фио'), c.get('адрес'), amount, number,
-                pl.date_plain(c.get('дата_претензии') or
-                              settings.get('дата_претензии') or ''),
-                pl.date_words(c.get('дата_состояния') or
-                              settings.get('дата_состояния') or ''),
+        vals = [n, c.get('лс'), c.get('фио'), c.get('адрес'), amount, number or '',
+                pl.date_plain(claim_date) if claim_date else '',
+                pl.date_words(pl.state_date(c, settings, claim_date or pkg_date)),
                 c.get('период') or settings.get('период') or '',
                 out_path.name]
         for i, v in enumerate(vals, 1):
@@ -114,6 +112,14 @@ def main(argv):
     lines.append('Шаблон: %s' % template.name)
     lines.append('Претензий: %d' % len(claims))
     lines.append('Итого долга: %s руб.' % pl.money(total))
+    if pkg_number and pkg_date:
+        lines.append('Исходящий номер и дата (на весь пакет): № %s от %s'
+                     % (pkg_number, pl.date_plain(pkg_date)))
+    else:
+        lines.append('Исходящий номер и дата: НЕ ЗАДАНЫ '
+                     '— впишите «исходящий_номер_и_дата» в листе «Настройки»')
+    lines.append('По состоянию на: %s'
+                 % pl.date_words(pl.state_date({}, settings, pkg_date)))
     lines.append('Файл: %s' % out_path.name)
     lines.append('')
     lines.append('ПОДСТАНОВЛЕННЫЕ ПОЛЯ ШАБЛОНА:')
@@ -133,6 +139,13 @@ def main(argv):
     print('СБОРКА ДОСУДЕБНЫХ ПРЕТЕНЗИЙ')
     print('  шаблон: %s' % template.name)
     print('  претензий: %d, итого долга: %s руб.' % (len(claims), pl.money(total)))
+    if pkg_number and pkg_date:
+        print('  исходящий № %s от %s (на весь пакет)'
+              % (pkg_number, pl.date_plain(pkg_date)))
+    else:
+        print('  ⚠ исходящий номер и дата не заданы — впишите их '
+              'в листе «Настройки» (исходящий_номер_и_дата)')
+    print('  по состоянию на: %s' % pl.date_words(pl.state_date({}, settings, pkg_date)))
     if warnings:
         print('  предупреждений: %d (см. %s)' % (len(warnings), pl.REPORT))
     print('  файл: %s' % out_path.name)

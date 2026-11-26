@@ -21,6 +21,19 @@ if ((Test-Path (Join-Path $root 'app\features.json')) -and -not (Test-Path (Join
 }
 New-Item -ItemType Directory -Path (Join-Path $app 'icons') -Force | Out-Null
 Copy-Item (Join-Path $root 'app\icons\*.png') -Destination (Join-Path $app 'icons') -Force
+# Шаблоны претензий: копируем, если папки ещё нет — правки юриста не затираем.
+$pretensionTemplates = Join-Path $app 'pretension-templates'
+if (-not (Test-Path $pretensionTemplates)) {
+    New-Item -ItemType Directory -Path $pretensionTemplates -Force | Out-Null
+    Copy-Item (Join-Path $root 'app\pretension-templates\*.docx') -Destination $pretensionTemplates -Force
+}
+# База почтовых индексов РФ (публичные данные ОПС «Почты России»):
+# нужна, чтобы индексы подтягивались без сети.
+$postalData = Join-Path $app 'data'
+if (-not (Test-Path $postalData)) {
+    New-Item -ItemType Directory -Path $postalData -Force | Out-Null
+    Copy-Item (Join-Path $root 'app\data\postal_*.gz') -Destination $postalData -Force
+}
 foreach ($name in @('input-workbook.xlsx', 'demo-housing.xlsx',
                     'demo-family-questionnaire.xlsx', 'demo-consumer-questionnaire.xlsx')) {
     if (-not (Test-Path (Join-Path $app $name))) {

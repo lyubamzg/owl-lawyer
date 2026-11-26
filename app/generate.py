@@ -36,6 +36,11 @@ try:                       # запасной источник почтовог�
 except Exception:          # noqa: BLE001
     postrf_index = None
 
+try:                       # локальная база почтовых индексов РФ (работает офлайн)
+    import postal_index
+except Exception:          # noqa: BLE001
+    postal_index = None
+
 try:                       # локальная база судебных участков (резерв подсудности,
     import sudrf_base      # когда ГАС «Правосудие» не отвечает)
 except Exception:          # noqa: BLE001
@@ -316,7 +321,7 @@ def cell_str(v):
 CYR = re.compile('[а-яёА-ЯЁ]')
 LAT = re.compile('[a-zA-Z]')
 FIO_RE = re.compile(r'^[А-ЯЁ][а-яё\-]+(?:\s*\([^()]{1,40}\))? [А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]+$')
-# «Фамилия Имя» без отчества — в справках Пример («Петров Пётр»)
+# «Фамилия Имя» без отчества — в справках МГА («Петров Пётр»)
 FIO2_RE = re.compile(r'^[А-ЯЁ][а-яё\-]+ [А-ЯЁ][а-яё\-]+$')
 # «Фамилия И.О.» — так ответчик записан в самой «Портянке» («Фомин А.Н.»):
 # документ собирается с этим именем, юрист дописывает отчество вручную
@@ -601,7 +606,7 @@ def normalize_claims(claims, debtors, errors, warnings, f9=None, auto_court=Fals
                 err(f'Лист «Должники», строка {dd["_row"]}: пустое ФИО (ЛС «{ls}»).')
                 continue
             if len(fio.split()) < 3 and used:
-                # «Фамилия Имя» без отчества — бывает в справках Пример
+                # «Фамилия Имя» без отчества — бывает в справках МГА
                 # («Петров Пётр»), а вот «Фамилия И.О.» — неполные данные:
                 # их надо дописать (лицо ищется по фамилии и инициалам)
                 if FIO2_RE.fullmatch(fio):
@@ -840,6 +845,12 @@ def apply_jurisdiction(docs, cfg, warnings):
             idx = str(res.get('postal_code') or '')
             level = str(res.get('index_level') or '')
             src = 'по ФИАС (ГАС «Правосудие»)'
+            if not idx and postal_index is not None:
+                # ГАС «Правосудие» не ответил — берём индекс из локальной
+                # базы почтовых индексов РФ (работает без сети)
+                idx3, level3 = postal_index.from_base(addr)
+                if idx3:
+                    idx, level, src = idx3, level3, 'локальная база индексов ОПС'
             if not idx and postrf_index is not None:
                 # ГАС «Правосудие» не ответил или не нашёл — берём индекс
                 # с сайта «Почты России» (тот же справочник ФИАС, открытый доступ)

@@ -13,7 +13,6 @@
 import re
 import shutil
 import sys
-from datetime import date
 from pathlib import Path
 
 import openpyxl
@@ -158,6 +157,8 @@ def main(argv):
         template = pl.pick_template({}, addresses)
 
     wb = openpyxl.load_workbook(BOOK)
+    import create_pretension_workbook
+    create_pretension_workbook.refresh_instructions(wb)
     if 'Шаблон' not in wb.sheetnames:
         tm = wb.create_sheet('Шаблон')
         tm['A1'], tm['B1'] = 'Параметр', 'Значение из шаблона'
@@ -206,6 +207,19 @@ def main(argv):
 
     # настройки: шапка из шаблона (если её ещё не заполняли)
     st = wb['Настройки']
+    srows = pl.ensure_settings(st)
+    current = pl.sheet_settings(st)
+    # старый параметр «претензия_номер_от» → «исходящий_номер_и_дата»
+    legacy = str(current.get('претензия_номер_от') or '').strip()
+    if legacy:
+        if not str(current.get('исходящий_номер_и_дата') or '').strip():
+            st.cell(row=srows['исходящий_номер_и_дата'], column=2,
+                    value=legacy)
+            warnings.append('исходящий номер и дата перенесены из «претензия_номер_от»')
+        r = srows.get('претензия_номер_от')
+        if r:
+            st.delete_rows(r)
+            srows = pl.ensure_settings(st)
     current = pl.sheet_settings(st)
     if template and template.is_file():
         import docx
@@ -236,8 +250,6 @@ def main(argv):
                 kept.append(key)
         for key, val in head.items():
             _set_stored(tm, key, val)
-        if not str(current.get('дата_претензии') or '').strip():
-            _set_setting(st, 'дата_претензии', date.today().strftime('%d.%m.%Y'))
         if kept:
             warnings.append('шапка: значения, отличающиеся от шаблона, оставлены '
                             'как есть (правка юриста): ' + ', '.join(kept))
@@ -255,9 +267,10 @@ def main(argv):
     lines.append('')
     lines.append('ЧТО ПРОВЕРИТЬ В ТАБЛИЦЕ (лист «Настройки»):')
     lines.append('  • шапка — реквизиты взыскателя;')
-    lines.append('  • претензия_номер_от — с какого номера нумеровать претензии;')
-    lines.append('  • дата_претензии — дата в шапке претензии;')
+    lines.append('  • исходящий_номер_и_дата — «100 от 10.11.2026»: исходящий номер')
+    lines.append('    и дата претензий; одни на весь пакет (заполняет сотрудник);')
     lines.append('  • дата_состояния — «по состоянию на …» (долг на какую дату);')
+    lines.append('    если не заполнено — берётся 1-е число месяца исходящей даты;')
     lines.append('  • период — «за жилищно-коммунальные услуги» (что именно за период);')
     lines.append('  • срок_оплаты, дней — сколько дней на оплату.')
     lines.append('')

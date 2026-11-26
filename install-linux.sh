@@ -55,6 +55,15 @@ chmod +x "$DEST/"*.sh "$DEST/desktop_app.py"
 cp -n "$SRC/app/demo-housing.xlsx" "$DEST/"
 # Флаги разделов: копируем только если файла ещё нет — правки пользователя не затираем.
 cp -n "$SRC/app/features.json" "$DEST/" 2>/dev/null
+# Шаблоны претензий: копируем, если папки ещё нет — правки юриста не затираем.
+mkdir -p "$DEST/pretension-templates"
+cp -n "$SRC/app/pretension-templates/"*.docx "$DEST/pretension-templates/" 2>/dev/null
+# База почтовых индексов РФ (публичные данные ОПС «Почты России»):
+# нужна, чтобы индексы подтягивались без сети. Обновляем, только если
+# у пользователя базы ещё нет.
+mkdir -p "$DEST/data"
+cp -n "$SRC/app/data/postal_base.json.gz" "$SRC/app/data/postal_streets.txt.gz" \
+      "$DEST/data/" 2>/dev/null
 mkdir -p "$POD/incoming"
 cp -n "$SRC/templates/"*.doc "$POD/"
 cp -f "$SRC/incoming/README.txt" "$POD/incoming/" 2>/dev/null
