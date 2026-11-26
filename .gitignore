@@ -26,6 +26,10 @@ scans-*/
 f9-text/
 contract-templates/
 
+# локальная база судебных участков (6 МБ реальной географии) — собирается
+# скриптом update_sudebnye_uchastki.py, в репозиторий не кладём
+data/
+
 # рабочие книги ввода, портянки и анкеты
 pretension-input*.xlsx
 output-pretension/
