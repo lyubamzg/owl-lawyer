@@ -4,8 +4,8 @@
 set -u
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="$HOME/Desktop/OwlLawyer"
-POD="$HOME/Desktop/filing"
+DEST="$HOME/Desktop/Сова-юрист/OwlLawyer"
+POD="$HOME/Desktop/Сова-юрист/filing"
 
 echo "════════════════════════════════════════════════"
 echo "  УСТАНОВКА «СОВА-ЮРИСТ»  (Linux)"
@@ -58,6 +58,9 @@ cp -n "$SRC/app/features.json" "$DEST/" 2>/dev/null
 # Шаблоны претензий: копируем, если папки ещё нет — правки юриста не затираем.
 mkdir -p "$DEST/pretension-templates"
 cp -n "$SRC/app/pretension-templates/"*.docx "$DEST/pretension-templates/" 2>/dev/null
+# Шаблоны заявлений об исполнении (ФССП) — так же, без затирания правок.
+mkdir -p "$DEST/iss-templates"
+cp -n "$SRC/app/iss-templates/"*.docx "$DEST/iss-templates/" 2>/dev/null
 # База почтовых индексов РФ (публичные данные ОПС «Почты России»):
 # нужна, чтобы индексы подтягивались без сети. Обновляем, только если
 # у пользователя базы ещё нет.

@@ -37,6 +37,8 @@ data/*
 # рабочие книги ввода, портянки и анкеты
 pretension-input*.xlsx
 output-pretension/
+iss-input*.xlsx
+output-iss/
 input-workbook*.xlsx
 housing-input*.xlsx
 contracts-workbook*.xlsx

@@ -27,6 +27,12 @@ if (-not (Test-Path $pretensionTemplates)) {
     New-Item -ItemType Directory -Path $pretensionTemplates -Force | Out-Null
     Copy-Item (Join-Path $root 'app\pretension-templates\*.docx') -Destination $pretensionTemplates -Force
 }
+# Шаблоны заявлений об исполнении (ФССП) — так же, без затирания правок.
+$issTemplates = Join-Path $app 'iss-templates'
+if (-not (Test-Path $issTemplates)) {
+    New-Item -ItemType Directory -Path $issTemplates -Force | Out-Null
+    Copy-Item (Join-Path $root 'app\iss-templates\*.docx') -Destination $issTemplates -Force
+}
 # База почтовых индексов РФ (публичные данные ОПС «Почты России»):
 # нужна, чтобы индексы подтягивались без сети.
 $postalData = Join-Path $app 'data'
